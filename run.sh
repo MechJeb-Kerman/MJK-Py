@@ -28,4 +28,4 @@ pgrep -f websockify >/dev/null || \
   (websockify --web /usr/share/novnc 6080 localhost:5900 & sleep 1)
 
 echo "==> 打开 6080 端口访问： https://<你的codespace>-6080.app.github.dev/vnc.html"
-python3 game_blackhole_v0.3.2.py
+python3 HELLO/game_blackhole_v0.3.2.py
