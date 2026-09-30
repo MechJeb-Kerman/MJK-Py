@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Black Hole · 黑洞吞噬</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: radial-gradient(ellipse at 50% 40%, #12102a 0%, #05060f 70%, #000 100%);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  canvas {
+    display: block;
+    border-radius: 14px;
+    box-shadow: 0 0 60px rgba(120, 80, 255, .35), 0 0 160px rgba(80, 40, 200, .18);
+    cursor: crosshair;
+  }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    color: #6a6a92; font-size: 13px; letter-spacing: 1px;
+    user-select: none; pointer-events: none; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">WASD / 方向键 移动 &nbsp;·&nbsp; 吃掉小绿球变大 &nbsp;·&nbsp; 躲开红圈大球 &nbsp;·&nbsp; R 重开</div>
+
+<script>
+(() => {
+"use strict";
+
+/* =========================================================
+   基础设置
+   ========================================================= */
+const CV = document.getElementById("c");
+const ctx = CV.getContext("2d");
+
+const W = 1080, H = 720;
+const WORLD_W = 3200, WORLD_H = 2400;
+
+// 自适应缩放
+function fit() {
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H) * 0.94;
+  CV.width = W; CV.height = H;
+  CV.style.width  = (W * s) + "px";
+  CV.style.height = (H * s) + "px";
+}
+window.addEventListener("resize", fit);
+fit();
+
+/* =========================================================
+   工具函数
+   ========================================================= */
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const rand  = (a, b) => a + Math.random() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+
+function massColor(mass) {
+  // 质量越大 → 色相从青绿(0.45)转到红(0.0)
+  let t = Math.log(Math.max(mass, 1) / 6 + 1) / Math.log(70);
+  t = clamp(t, 0, 1);
+  const hue = 0.45 - 0.45 * t;
+  return hsl2rgb(hue * 360, 72, 58);
+}
+
+function hsl2rgb(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [
+    Math.round(f(0) * 255),
+    Math.round(f(8) * 255),
+    Math.round(f(4) * 255)
+  ];
+}
+const rgbStr = (c, a) => a === undefined
+  ? `rgb(${c[0]},${c[1]},${c[2]})`
+  : `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+/* =========================================================
+   星空背景（视差）
+   ========================================================= */
+const STARS = [];
+(function buildStars() {
+  for (let i = 0; i < 460; i++) {
+    STARS.push({
+      x: rand(0, 5000),
+      y: rand(0, 5000),
+      r: rand(0.5, 2.0),
+      b: randInt(70, 200),
+      p: [0.22, 0.42, 0.65][randInt(0, 2)]
+    });
+  }
+})();
+
+/* =========================================================
+   实体
+   ========================================================= */
+class Hole {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = 0; this.vy = 0;
+    this.mass = 22;
+    this.flash = 0;
+  }
+  get radius() { return Math.sqrt(this.mass) * 2.8; }
+}
+
+class Body {
+  constructor(x, y, mass) {
+    this.x = x; this.y = y;
+    this.mass = mass;
+    this.radius = Math.sqrt(mass) * 2.6;
+    const a = rand(0, TAU), s = rand(5, 45);
+    this.vx = Math.cos(a) * s;
+    this.vy = Math.sin(a) * s;
+    this.color = massColor(mass);
+  }
+}
+
+class Particle {
+  constructor(x, y, vx, vy, life, size, color) {
+    this.x = x; this.y = y;
+    this.vx = vx; this.vy = vy;
+    this.life = life; this.maxLife = life;
+    this.size = size;
+    this.color = color;
+  }
+}
+
+/* =========================================================
+   生成 / 特效
+   ========================================================= */
+function spawnBody(hole) {
+  let px = null, py = null;
+  for (let i = 0; i < 40; i++) {
+    const ang = rand(0, TAU);
+    const d = rand(760, 1350);
+    const x = hole.x + Math.cos(ang) * d;
+    const y = hole.y + Math.sin(ang) * d;
+    if (x > 90 && x < WORLD_W - 90 && y > 90 && y < WORLD_H - 90) {
+      px = x; py = y; break;
+    }
+  }
+  if (px === null) {
+    px = rand(90, WORLD_W - 90);
+    py = rand(90, WORLD_H - 90);
+  }
+  // 偏向小质量的分布，偶尔来一个巨无霸
+  const k = Math.pow(Math.random(), 2.2);
+  const mass = Math.max(3, hole.mass * (0.08 + k * 1.75));
+  return new Body(px, py, mass);
+}
+
+function burst(list, x, y, color, count, speed, baseVx = 0, baseVy = 0) {
+  const bright = [
+    Math.min(255, color[0] * 1.25 + 55),
+    Math.min(255, color[1] * 1.25 + 55),
+    Math.min(255, color[2] * 1.25 + 55)
+  ];
+  for (let i = 0; i < count; i++) {
+    const a = rand(0, TAU);
+    const s = rand(0.25, 1.0) * speed;
+    list.push(new Particle(
+      x + rand(-6, 6),
+      y + rand(-6, 6),
+      Math.cos(a) * s + baseVx * 0.3,
+      Math.sin(a) * s + baseVy * 0.3,
+      rand(0.35, 0.95),
+      rand(1.5, 4.2),
+      bright
+    ));
+  }
+}
+
+/* =========================================================
+   主游戏
+   ========================================================= */
+const BODY_COUNT = 46;
+const G_RANGE = 700;
+
+let keys = {};
+
+function run() {
+  const hole = new Hole(WORLD_W * 0.5, WORLD_H * 0.5);
+  let bodies = [];
+  for (let i = 0; i < BODY_COUNT; i++) bodies.push(spawnBody(hole));
+
+  let particles = [];
+  let camX = 0, camY = 0;
+  let shake = 0;
+  let score = 0;
+  let time = 0;
+  let spawnTimer = 0;
+  let state = "play";
+  let deathTimer = 0;
+
+  // ------- 事件 -------
+  const onKey = (e, down) => {
+    keys[e.key.toLowerCase()] = down;
+    if (down && ["arrowup","arrowdown","arrowleft","arrowright"," "].includes(e.key.toLowerCase())) {
+      e.preventDefault();
+    }
+  };
+  window.addEventListener("keydown", e => onKey(e, true));
+  window.addEventListener("keyup",   e => onKey(e, false));
+
+  /* =====================================================
+     一帧
+     ===================================================== */
+  function frame() {
+    const dt = 1 / 60;
+    time += dt;
+
+    /* ---------- 输入 & 黑洞移动 ---------- */
+    if (state === "play") {
+      let dx = 0, dy = 0;
+      if (keys["a"] || keys["arrowleft"])  dx -= 1;
+      if (keys["d"] || keys["arrowright"]) dx += 1;
+      if (keys["w"] || keys["arrowup"])    dy -= 1;
+      if (keys["s"] || keys["arrowdown"])  dy += 1;
+
+      let tvx = 0, tvy = 0;
+      if (dx || dy) {
+        const len = Math.hypot(dx, dy);
+        const maxSpd = 430 * Math.pow(22 / hole.mass, 0.18);
+        tvx = dx / len * maxSpd;
+        tvy = dy / len * maxSpd;
+      }
+      const k = Math.min(1, 12 * dt);
+      hole.vx += (tvx - hole.vx) * k;
+      hole.vy += (tvy - hole.vy) * k;
+      hole.x += hole.vx * dt;
+      hole.y += hole.vy * dt;
+
+      const hr = hole.radius;
+      hole.x = clamp(hole.x, hr, WORLD_W - hr);
+      hole.y = clamp(hole.y, hr, WORLD_H - hr);
+    }
+
+    /* ---------- 物体物理 & 吞噬 ---------- */
+    const survivors = [];
+    for (const b of bodies) {
+      let dx = hole.x - b.x;
+      let dy = hole.y - b.y;
+      let dist = Math.hypot(dx, dy);
+      if (dist < 1e-4) dist = 1e-4;
+
+      // 引力
+      if (dist < G_RANGE) {
+        const infl = 1 - dist / G_RANGE;
+        const acc = 1700 * Math.pow(infl, 1.6) * (1 + hole.mass / 150);
+        b.vx += (dx / dist) * acc * dt;
+        b.vy += (dy / dist) * acc * dt;
+      }
+      // 阻尼
+      b.vx *= (1 - 0.35 * dt);
+      b.vy *= (1 - 0.35 * dt);
+
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+
+      // 世界边界反弹
+      const m = b.radius;
+      if (b.x < m) { b.x = m; b.vx = Math.abs(b.vx) * 0.6; }
+      else if (b.x > WORLD_W - m) { b.x = WORLD_W - m; b.vx = -Math.abs(b.vx) * 0.6; }
+      if (b.y < m) { b.y = m; b.vy = Math.abs(b.vy) * 0.6; }
+      else if (b.y > WORLD_H - m) { b.y = WORLD_H - m; b.vy = -Math.abs(b.vy) * 0.6; }
+
+      // 吞噬判定
+      if (state === "play" && dist < hole.radius + b.radius * 0.35) {
+        if (b.mass <= hole.mass * 1.02) {
+          hole.mass += b.mass * 0.7;
+          score += b.mass;
+          hole.flash = 1;
+          shake = Math.min(shake + 2 + b.radius * 0.4, 16);
+          burst(particles, b.x, b.y, b.color,
+                Math.min(70, Math.floor(5 + b.radius * 0.9)), 280, b.vx, b.vy);
+          continue; // 被吃掉
+        } else {
+          state = "dead";
+          deathTimer = 0;
+          shake = 24;
+          burst(particles, hole.x, hole.y, [255, 120, 90], 130, 480);
+          continue;
+        }
+      }
+      survivors.push(b);
+    }
+    bodies = survivors;
+
+    /* ---------- 补充物体 ---------- */
+    if (state === "play") {
+      if (bodies.length < BODY_COUNT) {
+        spawnTimer += dt;
+        if (spawnTimer > 0.12) {
+          spawnTimer = 0;
+          bodies.push(spawnBody(hole));
+        }
+      } else {
+        spawnTimer = 0;
+      }
+    }
+
+    /* ---------- 粒子 ---------- */
+    const aliveP = [];
+    for (const p of particles) {
+      p.life -= dt;
+      if (p.life <= 0) continue;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= (1 - 1.8 * dt);
+      p.vy *= (1 - 1.8 * dt);
+      aliveP.push(p);
+    }
+    particles = aliveP;
+
+    /* ---------- 摄像机 ---------- */
+    camX = clamp(hole.x - W * 0.5, 0, WORLD_W - W);
+    camY = clamp(hole.y - H * 0.5, 0, WORLD_H - H);
+    if (shake > 0.2) {
+      camX += rand(-shake, shake);
+      camY += rand(-shake, shake);
+      shake = Math.max(0, shake - 30 * dt);
+    } else shake = 0;
+
+    if (hole.flash > 0) hole.flash = Math.max(0, hole.flash - dt * 3);
+
+    if (state === "dead") deathTimer += dt;
+
+    /* =====================================================
+       渲染
+       ===================================================== */
+    // 背景
+    const bg = ctx.createRadialGradient(W * 0.5, H * 0.42, 60, W * 0.5, H * 0.5, W * 0.85);
+    bg.addColorStop(0, "#0d0b1e");
+    bg.addColorStop(1, "#04050d");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    // 星空（视差）
+    for (const s of STARS) {
+      const x = ((s.x - camX * s.p) % W + W) % W;
+      const y = ((s.y - camY * s.p) % H + H) % H;
+      const b = s.b;
+      ctx.fillStyle = `rgb(${b},${b},${Math.min(255, b + 55)})`;
+      ctx.beginPath();
+      ctx.arc(x, y, s.r, 0, TAU);
+      ctx.fill();
+    }
+
+    // 世界边界
+    ctx.strokeStyle = "rgba(90,70,180,0.55)";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(-camX, -camY, WORLD_W, WORLD_H);
+
+    /* ---------- 物体 ---------- */
+    for (const b of bodies) {
+      const sx = b.x - camX;
+      const sy = b.y - camY;
+      if (sx < -100 || sx > W + 100 || sy < -100 || sy > H + 100) continue;
+
+      const r = Math.max(1, b.radius);
+
+      // 外发光
+      const g = ctx.createRadialGradient(sx, sy, r * 0.4, sx, sy, r * 2.1);
+      g.addColorStop(0, rgbStr(b.color, 0.32));
+      g.addColorStop(1, rgbStr(b.color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(sx, sy, r * 2.1, 0, TAU); ctx.fill();
+
+      // 本体
+      ctx.fillStyle = rgbStr(b.color);
+      ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.fill();
+
+      // 高光
+      ctx.fillStyle = rgbStr([
+        Math.min(255, b.color[0] + 80),
+        Math.min(255, b.color[1] + 80),
+        Math.min(255, b.color[2] + 80)
+      ], 0.75);
+      ctx.beginPath();
+      ctx.arc(sx - r * 0.3, sy - r * 0.3, Math.max(0.6, r * 0.34), 0, TAU);
+      ctx.fill();
+
+      // 危险标记
+      if (state === "play" && b.mass > hole.mass) {
+        ctx.strokeStyle = "rgba(255,70,70,0.85)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(sx, sy, r + 5, 0, TAU); ctx.stroke();
+      }
+    }
+
+    /* ---------- 粒子 ---------- */
+    for (const p of particles) {
+      const sx = p.x - camX;
+      const sy = p.y - camY;
+      if (sx < -30 || sx > W + 30 || sy < -30 || sy > H + 30) continue;
+      const a = p.life / p.maxLife;
+      ctx.fillStyle = rgbStr(p.color, a);
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(0.8, p.size * a), 0, TAU);
+      ctx.fill();
+    }
+
+    /* ---------- 黑洞 ---------- */
+    const hx = hole.x - camX;
+    const hy = hole.y - camY;
+    const hr = Math.max(3, hole.radius);
+
+    // 引力场光晕
+    const halo = ctx.createRadialGradient(hx, hy, hr * 0.8, hx, hy, hr * 3.6);
+    halo.addColorStop(0, "rgba(150,90,255,0.30)");
+    halo.addColorStop(0.45, "rgba(90,50,190,0.12)");
+    halo.addColorStop(1, "rgba(60,20,140,0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(hx, hy, hr * 3.6, 0, TAU); ctx.fill();
+
+    // 吸积盘（旋转弧线）
+    for (let i = 0; i < 3; i++) {
+      const rr = hr * (1.32 + i * 0.30);
+      const a0 = time * (2.0 + i * 0.8) + i * 1.6;
+      ctx.lineWidth = Math.max(1, 3 - i);
+      ctx.strokeStyle = i === 0 ? "rgba(255,170,80,0.95)"
+                      : i === 1 ? "rgba(255,120,160,0.75)"
+                                : "rgba(170,110,255,0.55)";
+      ctx.beginPath(); ctx.arc(hx, hy, rr, a0, a0 + 1.8); ctx.stroke();
+
+      ctx.strokeStyle = "rgba(150,90,255,0.6)";
+      ctx.lineWidth = Math.max(1, 2 - i * 0.4);
+      ctx.beginPath(); ctx.arc(hx, hy, rr, a0 + 3.0, a0 + 4.3); ctx.stroke();
+    }
+
+    // 事件视界圈
+    ctx.strokeStyle = "rgba(140,80,230,0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(hx, hy, hr * 1.16, 0, TAU); ctx.stroke();
+
+    // 本体
+    ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.arc(hx, hy, hr, 0, TAU); ctx.fill();
+    ctx.strokeStyle = "rgba(160,100,255,0.95)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(hx, hy, hr, 0, TAU); ctx.stroke();
+
+    // 吞噬闪光
+    if (hole.flash > 0) {
+      ctx.strokeStyle = `rgba(255,240,200,${hole.flash})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(hx, hy, hr * (1.3 + (1 - hole.flash) * 0.7), 0, TAU);
+      ctx.stroke();
+    }
+
+    /* ---------- 危险红晕 ---------- */
+    if (state === "play") {
+      let danger = 0;
+      for (const b of bodies) {
+        if (b.mass > hole.mass) {
+          const d = Math.hypot(b.x - hole.x, b.y - hole.y);
+          if (d < 520) danger = Math.max(danger, 1 - d / 520);
+        }
+      }
+      if (danger > 0.02) {
+        const a = danger * 0.5;
+        const vg = ctx.createRadialGradient(W/2, H/2, H*0.32, W/2, H/2, H*0.78);
+        vg.addColorStop(0, "rgba(255,0,0,0)");
+        vg.addColorStop(1, `rgba(255,30,30,${a})`);
+        ctx.fillStyle = vg;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    /* ---------- HUD ---------- */
+    ctx.font = "bold 26px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "rgba(235,235,255,0.95)";
+    ctx.fillText(`质量 ${Math.floor(hole.mass)}`, 26, 46);
+    ctx.fillStyle = "rgba(150,220,255,0.9)";
+    ctx.fillText(`得分 ${Math.floor(score)}`, 26, 82);
+
+    // 质量条
+    const barW = 220, barH = 8;
+    const ratio = clamp((Math.log(hole.mass / 22 + 1)) / Math.log(120), 0, 1);
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    ctx.fillRect(26, 100, barW, barH);
+    const bg2 = ctx.createLinearGradient(26, 0, 26 + barW, 0);
+    bg2.addColorStop(0, "#38e0b0");
+    bg2.addColorStop(1, "#ff5a5a");
+    ctx.fillStyle = bg2;
+    ctx.fillRect(26, 100, barW * ratio, barH);
+
+    // 底部提示
+    ctx.font = "15px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+    ctx.fillStyle = "rgba(140,140,190,0.85)";
+    ctx.fillText("WASD / 方向键 移动　·　吃小躲大　·　ESC 退出", 26, H - 24);
+
+    /* ---------- 死亡界面 ---------- */
+    if (state === "dead") {
+      const a = Math.min(0.72, deathTimer * 0.9);
+      ctx.fillStyle = `rgba(0,0,0,${a})`;
+      ctx.fillRect(0, 0, W, H);
+
+      if (deathTimer > 0.45) {
+        const fade = Math.min(1, (deathTimer - 0.45) * 2.2);
+        ctx.textAlign = "center";
+
+        ctx.fillStyle = `rgba(255,90,90,${fade})`;
+        ctx.font = "bold 76px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+        ctx.fillText("被 吞 噬 了", W / 2, H / 2 - 80);
+
+        ctx.fillStyle = `rgba(235,235,255,${fade})`;
+        ctx.font = "bold 28px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+        ctx.fillText(`最终质量 ${Math.floor(hole.mass)}　·　得分 ${Math.floor(score)}`,
+                     W / 2, H / 2 + 10);
+
+        ctx.fillStyle = `rgba(170,170,215,${fade * (0.6 + 0.4 * Math.sin(time * 5))})`;
+        ctx.font = "20px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+        ctx.fillText("按 R 重新开始", W / 2, H / 2 + 78);
+
+        ctx.textAlign = "left";
+      }
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  /* 让 R 键重开 */
+  const restartKey = e => {
+    if (state === "dead" && e.key.toLowerCase() === "r") {
+      window.removeEventListener("keydown", restartKey);
+      window.removeEventListener("keydown", onKeyDownWrap);
+      window.removeEventListener("keyup", onKeyUpWrap);
+      restart();
+    }
+  };
+  const onKeyDownWrap = e => onKey(e, true);
+  const onKeyUpWrap   = e => onKey(e, false);
+
+  window.addEventListener("keydown", restartKey);
+
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================
+   启动 / 重开
+   ========================================================= */
+let running = false;
+function start() {
+  if (running) return;
+  running = true;
+  run();
+}
+
+// ESC 退出（提示用）
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    document.body.innerHTML =
+      "<div style='color:#7a7aa8;font-size:20px;padding:40px;font-family:sans-serif'>" +
+      "已退出 · 刷新页面重新开始 🕳️</div>";
+  }
+});
+
+start();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+z1=int(input("请输入第一个整数:"))
+z2=int(input("请输入第二个整数:"))
+z3=int(input("请输入第三个整数:"))
+min1=min(z1,z2,z3)
+print("三个整数中最小的数为:%d" % min1)
+max1=max(z1,z2,z3)
+print("三个整数中最大的数为:%d" % max1)
+print("三个整数中的中间值为:%d" % (z1+z2+z3-min1-max1))

@@ -1,0 +1,10 @@
+import math
+a=int(input("请输入一个整数:"))
+b=int(input("请输入另一个整数:"))
+print("两个整数的和为:%d" % (a+b))
+print("两个整数的差为:%d" % (a-b))
+print("两个整数的积为:%d" % (a*b))
+print("两个整数的商为:%.2f" % (a/b))
+print("两个整数的余数为:%d" % (a%b))
+print("log(a)为:%.2f" % (math.log10(a)))
+print("a的b次方根为:%d" % a**b)

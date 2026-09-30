@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>滚木大冒险</title>
+<style>
+  html,body{margin:0;height:100%;background:#0e1116;display:flex;align-items:center;
+            justify-content:center;font-family:"Microsoft YaHei",system-ui,sans-serif;overflow:hidden}
+  #wrap{position:relative;border-radius:14px;overflow:hidden;
+        box-shadow:0 24px 70px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.06)}
+  canvas{display:block}
+  #hint{position:absolute;left:0;right:0;bottom:10px;text-align:center;
+        color:rgba(255,255,255,.45);font-size:12px;letter-spacing:1px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="900" height="520"></canvas>
+  <div id="hint">空格 / ↑ / W / 点击 = 跳跃　　R = 重开</div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const GROUND_Y = H - 100;
+
+/* ---------------- 工具 ---------------- */
+const rand  = (a, b) => a + Math.random() * (b - a);
+const randi = (a, b) => Math.floor(rand(a, b + 1));
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+function roundRect(c, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y,     x + w, y + h, r);
+  c.arcTo(x + w, y + h, x,     y + h, r);
+  c.arcTo(x,     y + h, x,     y,     r);
+  c.arcTo(x,     y,     x + w, y,     r);
+  c.closePath();
+}
+
+/* ---------------- 云 ---------------- */
+class Cloud {
+  constructor() { this.reset(true); }
+  reset(init) {
+    this.x     = init ? rand(0, W) : W + rand(60, 200);
+    this.y     = rand(40, 190);
+    this.s     = rand(0.55, 1.35);
+    this.speed = rand(0.25, 0.85) * this.s;
+  }
+  update() { this.x -= this.speed; if (this.x < -160) this.reset(false); }
+  draw(c) {
+    c.save();
+    c.translate(this.x, this.y);
+    c.scale(this.s, this.s);
+    c.fillStyle = 'rgba(255,255,255,.92)';
+    c.beginPath();
+    c.arc(0, 0, 22, 0, Math.PI * 2);
+    c.arc(26, 6, 17, 0, Math.PI * 2);
+    c.arc(-26, 7, 15, 0, Math.PI * 2);
+    c.arc(4, -12, 16, 0, Math.PI * 2);
+    c.fill();
+    c.restore();
+  }
+}
+
+/* ---------------- 尘土粒子 ---------------- */
+class Dust {
+  constructor(x, y, big = false) {
+    this.x  = x + rand(-6, 6);
+    this.y  = y + rand(-6, 6);
+    const sp = big ? 6 : 3.6;
+    this.vx = rand(-sp, big ? sp : -0.6);
+    this.vy = rand(-sp * 0.8, -0.4);
+    this.r  = rand(2, big ? 6 : 4.5);
+    this.life = this.max = randi(big ? 26 : 16, big ? 46 : 34);
+  }
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.vy += 0.22;
+    this.vx *= 0.97;
+    return --this.life > 0;
+  }
+  draw(c) {
+    const t = this.life / this.max;
+    c.globalAlpha = t * 0.85;
+    c.fillStyle = `rgb(${205 - 40 * (1 - t) | 0},${198 - 45 * (1 - t) | 0},${180 - 55 * (1 - t) | 0})`;
+    c.beginPath();
+    c.arc(this.x, this.y, this.r * (0.45 + 0.55 * t), 0, Math.PI * 2);
+    c.fill();
+    c.globalAlpha = 1;
+  }
+}
+
+/* ---------------- 滚木 ---------------- */
+class Log {
+  constructor() { this.r = 30; this.reset(); }
+  reset() {
+    this.x = 165;
+    this.y = GROUND_Y - this.r;
+    this.vy = 0;
+    this.angle = 0;
+    this.onGround = true;
+  }
+  jump() {
+    if (!this.onGround) return false;
+    this.vy = -14.2;
+    this.onGround = false;
+    return true;
+  }
+  update(speed) {
+    let landed = false;
+    this.vy += 0.88;
+    this.y  += this.vy;
+    if (this.y >= GROUND_Y - this.r) {
+      this.y = GROUND_Y - this.r;
+      if (!this.onGround) landed = true;
+      this.vy = 0;
+      this.onGround = true;
+    }
+    this.angle += speed / this.r;      // 速度 / 半径 = 滚动的弧度
+    return landed;
+  }
+  hitbox() {
+    const r = this.r - 7;
+    return { x: this.x - r, y: this.y - r, w: r * 2, h: r * 2 };
+  }
+  draw(c) {
+    // 地面阴影
+    const airH = GROUND_Y - (this.y + this.r);
+    const t = clamp(1 - airH / 190, 0, 1);
+    if (t > 0.02) {
+      c.save();
+      c.globalAlpha = 0.34 * t;
+      c.fillStyle = '#2c4a24';
+      c.beginPath();
+      c.ellipse(this.x, GROUND_Y + 4, this.r * (0.55 + 0.45 * t), 8 * (0.35 + 0.65 * t), 0, 0, Math.PI * 2);
+      c.fill();
+      c.restore();
+    }
+
+    c.save();
+    c.translate(this.x, this.y);
+
+    // 木身
+    const g = c.createRadialGradient(-9, -11, 3, 0, 0, this.r);
+    g.addColorStop(0,   '#c9965c');
+    g.addColorStop(0.55,'#9c6634');
+    g.addColorStop(1,   '#6e4520');
+    c.fillStyle = g;
+    c.beginPath(); c.arc(0, 0, this.r, 0, Math.PI * 2); c.fill();
+
+    // 外圈亮边
+    c.strokeStyle = '#d9a76b'; c.lineWidth = 3.5;
+    c.beginPath(); c.arc(0, 0, this.r - 2.2, 0, Math.PI * 2); c.stroke();
+
+    // 年轮
+    c.strokeStyle = 'rgba(90,54,22,.55)'; c.lineWidth = 2;
+    c.beginPath(); c.arc(0, 0, this.r - 11, 0, Math.PI * 2); c.stroke();
+    c.beginPath(); c.arc(0, 0, this.r - 19, 0, Math.PI * 2); c.stroke();
+
+    // 旋转纹理（滚动感）
+    c.strokeStyle = 'rgba(78,45,18,.85)'; c.lineWidth = 3.2; c.lineCap = 'round';
+    for (let i = 0; i < 3; i++) {
+      const a = this.angle + i * Math.PI * 2 / 3;
+      c.beginPath();
+      c.moveTo(Math.cos(a) * 6,            Math.sin(a) * 6);
+      c.lineTo(Math.cos(a) * (this.r - 9), Math.sin(a) * (this.r - 9));
+      c.stroke();
+    }
+    // 中心小点
+    c.fillStyle = 'rgba(70,40,16,.9)';
+    c.beginPath(); c.arc(0, 0, 3.4, 0, Math.PI * 2); c.fill();
+
+    c.restore();
+  }
+}
+
+/* ---------------- 障碍物 ---------------- */
+class Obstacle {
+  constructor(x, level) {
+    this.kind = Math.random() < 0.5 ? 'stone' : 'trunk';
+    if (this.kind === 'stone') {
+      this.w = randi(46, 70);
+      this.h = clamp(randi(30, 48) + level * 5, 30, 78);
+    } else {
+      this.w = randi(34, 46);
+      this.h = clamp(randi(54, 82) + level * 5, 54, 88);
+    }
+    this.x = x;
+    this.y = GROUND_Y - this.h;
+    this.dead = false;
+  }
+  update(speed) { this.x -= speed; if (this.x + this.w < -40) this.dead = true; }
+  hitbox() {
+    return { x: this.x + 8, y: this.y + 6, w: this.w - 16, h: this.h - 6 };
+  }
+  draw(c) {
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+
+    // 影子
+    c.globalAlpha = 0.2;
+    c.fillStyle = '#1e3a18';
+    c.beginPath();
+    c.ellipse(x + w / 2, GROUND_Y + 3, w * 0.56, 6, 0, 0, Math.PI * 2);
+    c.fill();
+    c.globalAlpha = 1;
+
+    if (this.kind === 'stone') {
+      const pts = [
+        [x,            y + h],
+        [x + w * 0.10, y + h * 0.44],
+        [x + w * 0.40, y],
+        [x + w * 0.76, y + h * 0.20],
+        [x + w,        y + h],
+      ];
+      c.beginPath();
+      c.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
+      c.closePath();
+      const g = c.createLinearGradient(x, y, x + w, y + h);
+      g.addColorStop(0, '#9aa0aa');
+      g.addColorStop(1, '#5f646e');
+      c.fillStyle = g;
+      c.fill();
+      c.strokeStyle = '#4c515a'; c.lineWidth = 3; c.stroke();
+
+      // 高光
+      c.beginPath();
+      c.moveTo(x + w * 0.40, y + 4);
+      c.lineTo(x + w * 0.68, y + h * 0.26);
+      c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = 2.4; c.stroke();
+    } else {
+      // 树桩
+      const g = c.createLinearGradient(x, y, x + w, y);
+      g.addColorStop(0,   '#9c6a3c');
+      g.addColorStop(0.5, '#7d4f28');
+      g.addColorStop(1,   '#5d391b');
+      c.fillStyle = g;
+      roundRect(c, x, y, w, h, 6);
+      c.fill();
+      c.strokeStyle = '#4a2d15'; c.lineWidth = 3; c.stroke();
+
+      // 树皮竖纹
+      c.strokeStyle = 'rgba(60,34,12,.5)'; c.lineWidth = 2;
+      for (let i = 1; i <= 2; i++) {
+        const px = x + w * i / 3;
+        c.beginPath(); c.moveTo(px, y + 12); c.lineTo(px, y + h - 6); c.stroke();
+      }
+
+      // 顶部年轮
+      c.fillStyle = '#c79a63';
+      c.beginPath(); c.ellipse(x + w / 2, y + 1, w / 2, 8, 0, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = '#7a4f26'; c.lineWidth = 2.6; c.stroke();
+      c.strokeStyle = 'rgba(110,70,30,.75)'; c.lineWidth = 1.6;
+      c.beginPath(); c.ellipse(x + w / 2, y + 1, w / 4, 4, 0, 0, Math.PI * 2); c.stroke();
+    }
+  }
+}
+
+/* ---------------- 游戏 ---------------- */
+class Game {
+  constructor() {
+    this.best = 0;
+    this.clouds = [new Cloud(), new Cloud(), new Cloud(), new Cloud(), new Cloud()];
+    this.reset();
+  }
+
+  reset() {
+    this.log = new Log();
+    this.obstacles = [];
+    this.dusts = [];
+    this.score = 0;
+    this.timeAlive = 0;
+    this.speed = 6;
+    this.groundOffset = 0;
+    this.nextGap = 520;
+    this.state = 'ready';       // ready | playing | over
+    this.flash = 0;
+  }
+
+  start() {
+    if (this.state === 'ready') { this.state = 'playing'; return true; }
+    return false;
+  }
+
+  onJump() {
+    if (this.state === 'ready') { this.state = 'playing'; return; }
+    if (this.state === 'playing') {
+      if (this.log.jump()) {
+        for (let i = 0; i < 6; i++) this.dusts.push(new Dust(this.log.x - 12, GROUND_Y - 2));
+      }
+    }
+  }
+
+  restart() {
+    if (this.state === 'over') { this.reset(); this.state = 'playing'; }
+  }
+
+  overlap(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  update() {
+    for (const c of this.clouds) c.update();
+    for (const d of this.dusts) d.update();
+    this.dusts = this.dusts.filter(d => d.life > 0);
+    if (this.flash > 0) this.flash--;
+
+    if (this.state !== 'playing') return;
+
+    this.timeAlive += 1 / 60;
+    this.speed = Math.min(6 + this.timeAlive * 0.16, 13);
+    this.score += this.speed * 0.042;
+
+    this.groundOffset = (this.groundOffset + this.speed) % 84;
+
+    // 木头
+    const landed = this.log.update(this.speed);
+    if (landed) {
+      for (let i = 0; i < 9; i++) this.dusts.push(new Dust(this.log.x, GROUND_Y - 3));
+    }
+
+    // 生成障碍
+    this.nextGap -= this.speed;
+    if (this.nextGap <= 0) {
+      const level = Math.min(this.timeAlive / 20, 4);
+      this.obstacles.push(new Obstacle(W + 50, level));
+      const base = this.speed * 42 + 175;
+      this.nextGap = rand(base, base * 1.65);
+    }
+
+    // 更新障碍 + 碰撞
+    const hitbox = this.log.hitbox();
+    for (const o of this.obstacles) {
+      o.update(this.speed);
+      if (this.state === 'playing' && this.overlap(hitbox, o.hitbox())) {
+        this.state = 'over';
+        this.flash = 16;
+        this.best = Math.max(this.best, Math.floor(this.score));
+        for (let i = 0; i < 30; i++) this.dusts.push(new Dust(this.log.x + 14, this.log.y, true));
+      }
+    }
+    this.obstacles = this.obstacles.filter(o => !o.dead);
+  }
+
+  draw(c) {
+    /* --- 天空渐变 --- */
+    const sky = c.createLinearGradient(0, 0, 0, GROUND_Y);
+    sky.addColorStop(0,   '#6fb8ea');
+    sky.addColorStop(0.55,'#a9d8f2');
+    sky.addColorStop(1,   '#dff0f8');
+    c.fillStyle = sky;
+    c.fillRect(0, 0, W, GROUND_Y);
+
+    /* --- 太阳 --- */
+    c.save();
+    c.globalAlpha = 0.55;
+    const sunG = c.createRadialGradient(W - 130, 88, 6, W - 130, 88, 78);
+    sunG.addColorStop(0, 'rgba(255,247,200,1)');
+    sunG.addColorStop(1, 'rgba(255,240,170,0)');
+    c.fillStyle = sunG;
+    c.beginPath(); c.arc(W - 130, 88, 78, 0, Math.PI * 2); c.fill();
+    c.restore();
+    c.fillStyle = '#fff6c4';
+    c.beginPath(); c.arc(W - 130, 88, 30, 0, Math.PI * 2); c.fill();
+
+    /* --- 云 --- */
+    for (const cl of this.clouds) cl.draw(c);
+
+    /* --- 远山（视差） --- */
+    const drawHills = (color, baseY, amp, k, span) => {
+      const off = (this.groundOffset * k) % span;
+      c.fillStyle = color;
+      for (let i = -1; i <= W / span + 1; i++) {
+        const x = i * span - off;
+        c.beginPath();
+        c.moveTo(x, baseY + 60);
+        c.lineTo(x + span / 2, baseY - amp);
+        c.lineTo(x + span, baseY + 60);
+        c.closePath();
+        c.fill();
+      }
+    };
+    drawHills('#9ecfb4', GROUND_Y - 30, 78, 0.10, 420);
+    drawHills('#7bbb9a', GROUND_Y - 6,  52, 0.22, 300);
+
+    /* --- 地面 --- */
+    c.fillStyle = '#7cb45f';
+    c.fillRect(0, GROUND_Y, W, 20);
+    c.fillStyle = '#a8834f';
+    c.fillRect(0, GROUND_Y + 20, W, H - GROUND_Y - 20);
+
+    // 泥土纹理
+    c.strokeStyle = 'rgba(120,92,56,.55)';
+    c.lineWidth = 2.5;
+    for (let i = -1; i <= W / 84 + 1; i++) {
+      const x = i * 84 + this.groundOffset;
+      c.beginPath();
+      c.moveTo(x, GROUND_Y + 30);
+      c.lineTo(x + 26, GROUND_Y + 62);
+      c.stroke();
+      c.beginPath();
+      c.moveTo(x + 40, GROUND_Y + 40);
+      c.lineTo(x + 58, GROUND_Y + 74);
+      c.stroke();
+    }
+
+    // 草皮边缘
+    c.fillStyle = '#8fc76e';
+    for (let i = -1; i <= W / 26 + 1; i++) {
+      const x = i * 26 + (this.groundOffset % 26);
+      c.beginPath();
+      c.moveTo(x, GROUND_Y);
+      c.lineTo(x + 7, GROUND_Y - 8);
+      c.lineTo(x + 14, GROUND_Y);
+      c.closePath();
+      c.fill();
+    }
+    c.strokeStyle = '#4e7c3c';
+    c.lineWidth = 3;
+    c.beginPath(); c.moveTo(0, GROUND_Y + 20); c.lineTo(W, GROUND_Y + 20); c.stroke();
+
+    /* --- 障碍物 --- */
+    for (const o of this.obstacles) o.draw(c);
+
+    /* --- 尘土（木头后面） --- */
+    for (const d of this.dusts) d.draw(c);
+
+    /* --- 滚木 --- */
+    this.log.draw(c);
+
+    /* --- 受击闪白 --- */
+    if (this.flash > 0) {
+      c.fillStyle = `rgba(255,255,255,${this.flash / 40})`;
+      c.fillRect(0, 0, W, H);
+    }
+
+    /* --- UI --- */
+    this.drawUI(c);
+  }
+
+  drawUI(c) {
+    // 分数
+    c.save();
+    c.shadowColor = 'rgba(0,0,0,.28)';
+    c.shadowBlur = 8;
+    c.shadowOffsetY = 2;
+
+    c.fillStyle = '#1f2937';
+    c.font = 'bold 26px "Microsoft YaHei",system-ui,sans-serif';
+    c.textAlign = 'left'; c.textBaseline = 'top';
+    c.fillText('分数  ' + Math.floor(this.score), 26, 20);
+
+    c.fillStyle = 'rgba(40,50,65,.7)';
+    c.font = 'bold 18px "Microsoft YaHei",system-ui,sans-serif';
+    c.fillText('最高分  ' + this.best, 28, 56);
+
+    // 速度条
+    const sw = 130, sx = 28, sy = 88;
+    c.fillStyle = 'rgba(255,255,255,.45)';
+    roundRect(c, sx, sy, sw, 8, 4); c.fill();
+    c.fillStyle = '#f59e0b';
+    roundRect(c, sx, sy, sw * clamp((this.speed - 6) / 7, 0, 1), 8, 4); c.fill();
+    c.restore();
+
+    // 遮罩层
+    if (this.state === 'ready' || this.state === 'over') {
+      c.fillStyle = 'rgba(8,15,25,.55)';
+      c.fillRect(0, 0, W, H);
+      c.textAlign = 'center';
+
+      if (this.state === 'ready') {
+        c.fillStyle = '#ffffff';
+        c.font = 'bold 58px "Microsoft YaHei",system-ui,sans-serif';
+        c.fillText('滚木大冒险', W / 2, 178);
+
+        c.fillStyle = '#ffd75e';
+        c.font = 'bold 24px "Microsoft YaHei",system-ui,sans-serif';
+        c.fillText('按 空格 开始滚动', W / 2, 262);
+
+        c.fillStyle = 'rgba(255,255,255,.82)';
+        c.font = '19px "Microsoft YaHei",system-ui,sans-serif';
+        c.fillText('跳跃躲开石头和树桩，滚得越远分数越高', W / 2, 310);
+      } else {
+        c.fillStyle = '#ff8f7a';
+        c.font = 'bold 58px "Microsoft YaHei",system-ui,sans-serif';
+        c.fillText('撞上啦！', W / 2, 160);
+
+        c.fillStyle = '#ffffff';
+        c.font = 'bold 30px "Microsoft YaHei",system-ui,sans-serif';
+        c.fillText('本次得分  ' + Math.floor(this.score), W / 2, 244);
+
+        c.fillStyle = 'rgba(255,255,255,.72)';
+        c.font = '20px "Microsoft YaHei",system-ui,sans-serif';
+        c.fillText('最高分  ' + this.best, W / 2, 288);
+
+        c.fillStyle = '#ffd75e';
+        c.font = 'bold 22px "Microsoft YaHei",system-ui,sans-serif';
+        c.fillText('按 R 再来一次', W / 2, 348);
+      }
+    }
+  }
+}
+
+/* ---------------- 主循环 ---------------- */
+const game = new Game();
+
+addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+    e.preventDefault();
+    game.onJump();
+  } else if (e.code === 'KeyR') {
+    game.restart();
+  }
+});
+
+cv.addEventListener('pointerdown', e => { e.preventDefault(); game.onJump(); });
+
+let last = performance.now(), acc = 0;
+const STEP = 1000 / 60;
+
+function loop(now) {
+  let dt = now - last;
+  last = now;
+  if (dt > 200) dt = 200;          // 防止切标签页后跳帧
+  acc += dt;
+
+  let guard = 0;
+  while (acc >= STEP && guard++ < 5) {
+    game.update();
+    acc -= STEP;
+  }
+  game.draw(ctx);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
