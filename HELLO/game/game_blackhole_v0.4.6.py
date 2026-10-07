@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Black Hole · 黑洞吞噬 v0.4.5
-v0.4.4 全部内容 +
-  新增：奖励关（每 3 关触发，15 秒金币狂欢）
+Black Hole · 黑洞吞噬 v0.4.6
+v0.4.5 全部内容 +
+  修复：Toast 弹字移到小地图下方，不再遮挡小地图
 
 操作：
   移动 WASD/方向键 或 拖动左下摇杆
   冲刺 Space  无敌 Q  引力爆发 E  炸弹 F
   暂停 P  帮助 F3  切皮肤 F1  编辑器 F2  加载关卡 L  选项 ESC  重开 R
 """
-import os, sys, math, random, json, array, pygame
+import os, sys, math, random, json, array
 
 if sys.platform == "win32":
     try:
@@ -21,6 +21,10 @@ if sys.platform == "win32":
         except Exception:
             pass
 
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
+
+import pygame
 
 # =========================================================
 # 常量
@@ -37,10 +41,10 @@ ZOOM_START_MASS = 2000.0
 ZOOM_END_MASS   = 20000.0
 ZOOM_MIN_SCALE  = 0.40
 
-BONUS_INTERVAL  = 3        # 每 N 关触发奖励关
-BONUS_DURATION  = 15.0     # 奖励关时长
-BONUS_SCORE_MULT = 2.5     # 奖励关额外得分倍率
-BONUS_END_MASS  = 30.0     # 奖励关结束额外质量
+BONUS_INTERVAL  = 3
+BONUS_DURATION  = 15.0
+BONUS_SCORE_MULT = 2.5
+BONUS_END_MASS  = 30.0
 
 DISPLAY_MODES = [
     ("窗口 1080×720",  (1080, 720),  False),
@@ -52,7 +56,7 @@ DISPLAY_MODES = [
 current_display_idx = 0
 
 # =========================================================
-# 路径 + 自定义音频查找
+# 路径 + 自定义音频
 # =========================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -78,7 +82,7 @@ if not AUDIO_OK:
     except Exception:
         AUDIO_OK = False
 
-pygame.display.set_caption("Black Hole · 黑洞吞噬 v0.4.5")
+pygame.display.set_caption("Black Hole · 黑洞吞噬 v0.4.6")
 clock = pygame.time.Clock()
 canvas = pygame.Surface((W, H))
 screen = canvas
@@ -567,7 +571,6 @@ def spawn_body(hole, level_mult=1.0, hunter_chance=0.0, level=1, chaos=False):
     return b
 
 def spawn_bonus_body(hole):
-    """奖励关专用金币球"""
     x = y = 0.0
     for _ in range(40):
         ang = random.uniform(0, math.tau)
@@ -1244,7 +1247,6 @@ def run_game():
     level_mult = 1.0
     boss_spawned_for_level = 0
 
-    # 奖励关状态
     bonus_active = False
     bonus_timer = 0.0
     bonus_score_start = 0.0
@@ -1592,7 +1594,6 @@ def run_game():
 
         for s in skills: s.update(dt)
 
-        # 奖励关计时
         if bonus_active:
             bonus_timer -= dt
             if bonus_timer <= 0:
@@ -1897,7 +1898,6 @@ def run_game():
                 if level >= 5:  unlock(save, "level_5", toasts)
                 if level >= 10: unlock(save, "level_10", toasts)
 
-                # 每 N 关触发奖励关
                 if level % BONUS_INTERVAL == 0 and not bonus_active:
                     bonus_active = True
                     bonus_timer = BONUS_DURATION
@@ -1905,7 +1905,6 @@ def run_game():
                     toasts.append(Toast("🎉 奖励关！全是金币球！", 3.0))
                     audio.play("level", 1.0)
                     set_shake(8)
-                    # 清掉危险球，只留金币
                     bodies = [b for b in bodies if b.mass <= hole.mass]
 
                 for threshold, choices in EVOLUTIONS:
@@ -1914,7 +1913,6 @@ def run_game():
                         evo_menu_open = True
                         break
 
-            # BOSS（奖励关期间不出现）
             if state == "play" and not bonus_active:
                 boss_exists = any(b.is_boss for b in bodies)
                 if level % 5 == 0 and not boss_exists \
@@ -1929,7 +1927,6 @@ def run_game():
                     set_shake(20)
                     audio.play("boss", 1.0)
 
-            # 补球
             if state == "play":
                 if bonus_active:
                     if len(bodies) < 35:
@@ -2072,7 +2069,6 @@ def run_game():
                                int(hole.radius * cam_scale * 6))
             screen.blit(ds, (0, 0))
 
-        # 奖励关全屏金色氛围
         if bonus_active:
             warm = pygame.Surface((W, H), pygame.SRCALPHA)
             warm.fill((255, 200, 60, 18))
@@ -2209,7 +2205,6 @@ def run_game():
             screen.blit(f_xs.render(f"视角 {zoom_pct}%", True,
                                     (150, 180, 230)), (240, 104))
 
-        # 奖励关 HUD
         if bonus_active:
             banner_h = 56
             banner = pygame.Surface((W, banner_h), pygame.SRCALPHA)
@@ -2338,8 +2333,28 @@ def run_game():
                 screen.blit(txt, (rect.x + (rect.w - txt.get_width()) // 2,
                                   rect.y + (rect.h - txt.get_height()) // 2))
 
+        # 小地图
         if show_minimap and state == "play":
             draw_minimap(hole, bodies, powerups, cam_x, cam_y, cam_scale)
+
+        # ============ Toast（在小地图之后绘制，避免被遮挡）============
+        # 起始 y：小地图若显示则跳过它；否则从顶部 24 开始
+        ty = 24
+        if show_minimap and state == "play":
+            ty = 20 + 150 + 14     # 小地图顶部 20 + 高度 150 + 间距 14
+
+        for t in toasts:
+            a = clamp(t.life / min(0.5, t.max_life), 0, 1)
+            surf = f_md.render(t.text, True, (255, 230, 140))
+            surf.set_alpha(int(255 * a))
+            bg = pygame.Surface((surf.get_width() + 24,
+                                 surf.get_height() + 12), pygame.SRCALPHA)
+            bg.fill((30, 20, 60, int(180 * a)))
+            pygame.draw.rect(bg, (255, 210, 100, int(200 * a)),
+                             bg.get_rect(), 1, border_radius=6)
+            screen.blit(bg, (W - bg.get_width() - 26, ty))
+            screen.blit(surf, (W - bg.get_width() - 14, ty + 6))
+            ty += bg.get_height() + 8
 
         if timed and time_left is not None:
             tl = max(0, time_left)
@@ -2375,20 +2390,6 @@ def run_game():
             "WASD 移动 · 摇杆拖动 · Space 冲刺 · Q 无敌 · E 爆发 · F 炸弹 · "
             "P 暂停 · F3 帮助 · ESC 选项",
             True, (140, 140, 190)), (26, H - 24))
-
-        ty = 24
-        for t in toasts:
-            a = clamp(t.life / min(0.5, t.max_life), 0, 1)
-            surf = f_md.render(t.text, True, (255, 230, 140))
-            surf.set_alpha(int(255 * a))
-            bg = pygame.Surface((surf.get_width() + 24,
-                                 surf.get_height() + 12), pygame.SRCALPHA)
-            bg.fill((30, 20, 60, int(180 * a)))
-            pygame.draw.rect(bg, (255, 210, 100, int(200 * a)),
-                             bg.get_rect(), 1, border_radius=6)
-            screen.blit(bg, (W - bg.get_width() - 26, ty))
-            screen.blit(surf, (W - bg.get_width() - 14, ty + 6))
-            ty += bg.get_height() + 8
 
         if state == "dead":
             alpha = min(180, int(death_timer * 180))

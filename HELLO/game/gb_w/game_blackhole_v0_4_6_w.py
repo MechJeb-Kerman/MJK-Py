@@ -1,26 +1,42 @@
 # -*- coding: utf-8 -*-
 """
-Black Hole · 黑洞吞噬 v0.4.5
-v0.4.4 全部内容 +
-  新增：奖励关（每 3 关触发，15 秒金币狂欢）
+Black Hole · 黑洞吞噬 v0.4.6.w  (Web / pygbag 版)
+v0.4.6 全部内容 + Web 兼容：
+  - IS_WEB 检测（emscripten）
+  - localStorage 存档
+  - 打包字体 assets/NotoSansSC-Regular.ttf
+  - async 主循环
+  - 显示器模式固定为浏览器
 
-操作：
-  移动 WASD/方向键 或 拖动左下摇杆
-  冲刺 Space  无敌 Q  引力爆发 E  炸弹 F
-  暂停 P  帮助 F3  切皮肤 F1  编辑器 F2  加载关卡 L  选项 ESC  重开 R
+打包：
+  pip install -U pygbag
+  cd HELLO
+  pygbag --build game_blackhole_v0.4.6.w.py
+本地测试：
+  pygbag game_blackhole_v0.4.6.w.py
+  浏览器打开 http://localhost:8000
 """
-import os, sys, math, random, json, array, pygame
+import os, sys, math, random, json, array, asyncio
 
-if sys.platform == "win32":
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
+# =========================================================
+# 平台检测
+# =========================================================
+IS_WEB = sys.platform == "emscripten"
+
+if not IS_WEB:
+    if sys.platform == "win32":
         try:
-            ctypes.windll.user32.SetProcessDPIAware()
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
-            pass
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
 
+import pygame
 
 # =========================================================
 # 常量
@@ -30,55 +46,46 @@ WORLD_W, WORLD_H = 3200, 2400
 FPS = 60
 BODY_COUNT = 46
 G_RANGE = 700
-SAVE_FILE = "blackhole_save.json"
-LEVEL_FILE = "custom_levels.json"
 
 ZOOM_START_MASS = 2000.0
 ZOOM_END_MASS   = 20000.0
 ZOOM_MIN_SCALE  = 0.40
 
-BONUS_INTERVAL  = 3        # 每 N 关触发奖励关
-BONUS_DURATION  = 15.0     # 奖励关时长
-BONUS_SCORE_MULT = 2.5     # 奖励关额外得分倍率
-BONUS_END_MASS  = 30.0     # 奖励关结束额外质量
+BONUS_INTERVAL  = 3
+BONUS_DURATION  = 15.0
+BONUS_SCORE_MULT = 2.5
+BONUS_END_MASS  = 30.0
 
-DISPLAY_MODES = [
-    ("窗口 1080×720",  (1080, 720),  False),
-    ("窗口 1280×720",  (1280, 720),  False),
-    ("窗口 1600×900",  (1600, 900),  False),
-    ("窗口 1920×1080", (1920, 1080), False),
-    ("全屏",           (0, 0),       True),
-]
+if IS_WEB:
+    DISPLAY_MODES = [("浏览器", (W, H), False)]
+else:
+    DISPLAY_MODES = [
+        ("窗口 1080×720",  (1080, 720),  False),
+        ("窗口 1280×720",  (1280, 720),  False),
+        ("窗口 1600×900",  (1600, 900),  False),
+        ("窗口 1920×1080", (1920, 1080), False),
+        ("全屏",           (0, 0),       True),
+    ]
 current_display_idx = 0
 
 # =========================================================
-# 路径 + 自定义音频查找
+# 初始化 pygame
 # =========================================================
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(SCRIPT_DIR)
-
-def find_audio(*names):
-    for base in (ROOT_DIR, SCRIPT_DIR, os.getcwd()):
-        for n in names:
-            p = os.path.join(base, n)
-            if os.path.isfile(p):
-                return p
-    return None
-
-# =========================================================
-# 初始化
-# =========================================================
-pygame.mixer.pre_init(22050, -16, 1, 256)
+if not IS_WEB:
+    pygame.mixer.pre_init(22050, -16, 1, 256)
 pygame.init()
-AUDIO_OK = pygame.mixer.get_init() is not None
-if not AUDIO_OK:
-    try:
-        pygame.mixer.init(22050, -16, 1, 256)
-        AUDIO_OK = True
-    except Exception:
-        AUDIO_OK = False
 
-pygame.display.set_caption("Black Hole · 黑洞吞噬 v0.4.5")
+if IS_WEB:
+    AUDIO_OK = False           # ← Web 上强制静音
+else:
+    AUDIO_OK = pygame.mixer.get_init() is not None
+    if not AUDIO_OK:
+        try:
+            pygame.mixer.init(22050, -16, 1, 256)
+            AUDIO_OK = True
+        except Exception:
+            AUDIO_OK = False
+pygame.display.set_caption("Black Hole · 黑洞吞噬 v0.4.6.w")
 clock = pygame.time.Clock()
 canvas = pygame.Surface((W, H))
 screen = canvas
@@ -107,19 +114,132 @@ def get_font(size, bold=False):
     key = (size, bold)
     if key in _font_cache:
         return _font_cache[key]
-    for name in ("notosanscjksc", "notosanscjk", "wenquanyimicrohei",
-                 "wenquanyizenhei", "microsoftyahei", "simhei",
-                 "dejavusans", "arial"):
-        path = pygame.font.match_font(name, bold=bold)
-        if path:
-            _font_cache[key] = pygame.font.Font(path, size)
-            return _font_cache[key]
+
+    # 1. 打包字体（web 首选）
+    candidates = [
+        "assets/NotoSansSC-Regular.ttf",
+        "assets/NotoSansSC-Regular.otf",
+        "assets/NotoSansCJKsc-Regular.otf",
+        "assets/msyh.ttc",
+        "assets/simhei.ttf",
+        "NotoSansSC-Regular.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                _font_cache[key] = pygame.font.Font(p, size)
+                return _font_cache[key]
+            except Exception:
+                pass
+
+    # 2. 桌面系统字体
+    if not IS_WEB:
+        for name in ("notosanscjksc", "notosanscjk", "wenquanyimicrohei",
+                     "wenquanyizenhei", "microsoftyahei", "simhei",
+                     "dejavusans", "arial"):
+            path = pygame.font.match_font(name, bold=bold)
+            if path:
+                try:
+                    _font_cache[key] = pygame.font.Font(path, size)
+                    return _font_cache[key]
+                except Exception:
+                    pass
+
+    # 3. 兜底
     _font_cache[key] = pygame.font.Font(None, size)
     return _font_cache[key]
 
 def next_mode(cur):
     keys = list(GAME_MODES.keys())
     return keys[(keys.index(cur) + 1) % len(keys)]
+
+# =========================================================
+# 存档 / 关卡文件（web 用 localStorage）
+# =========================================================
+def _default_save():
+    return {"best_mass": 0.0, "best_score": 0.0, "unlocked": [], "skin": 0,
+            "display_idx": 0, "audio": True,
+            "core_xp": 0.0, "core_level": 1, "mode": "classic",
+            "no_shake": False, "seen_tutorial": False, "volume": 0.7,
+            "colorblind": False, "show_minimap": True,
+            "stat_plays": 0, "stat_eaten": 0, "stat_time": 0.0,
+            "stat_boss": 0, "stat_evolve": 0}
+
+if IS_WEB:
+    from platform import window
+
+    def load_save():
+        try:
+            raw = window.localStorage.getItem("blackhole_save")
+            if raw:
+                d = json.loads(raw)
+                base = _default_save()
+                base.update(d)
+                return base
+        except Exception:
+            pass
+        return _default_save()
+
+    def write_save(d):
+        try:
+            window.localStorage.setItem(
+                "blackhole_save", json.dumps(d, ensure_ascii=False))
+        except Exception:
+            pass
+
+    def level_save(bodies):
+        try:
+            window.localStorage.setItem(
+                "blackhole_levels", json.dumps(bodies, ensure_ascii=False))
+            return True
+        except Exception:
+            return False
+
+    def level_load():
+        try:
+            raw = window.localStorage.getItem("blackhole_levels")
+            return json.loads(raw) if raw else []
+        except Exception:
+            return []
+else:
+    SAVE_FILE = "blackhole_save.json"
+    LEVEL_FILE = "custom_levels.json"
+
+    def load_save():
+        if os.path.exists(SAVE_FILE):
+            try:
+                with open(SAVE_FILE, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                base = _default_save()
+                base.update(d)
+                return base
+            except Exception:
+                pass
+        return _default_save()
+
+    def write_save(d):
+        try:
+            with open(SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def level_save(bodies):
+        try:
+            with open(LEVEL_FILE, "w", encoding="utf-8") as f:
+                json.dump(bodies, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def level_load():
+        if os.path.exists(LEVEL_FILE):
+            try:
+                with open(LEVEL_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return []
 
 # =========================================================
 # 皮肤
@@ -167,22 +287,6 @@ class Audio:
             self.sounds["boom"]  = self._tone(120, 0.50, "saw",  0.55)
             self.sounds["evolve"]= self._tone(660, 0.40, "sine", 0.45)
             self.sounds["nova"]  = self._tone(400, 0.80, "saw",  0.55)
-
-            cd = find_audio("death.wav", "death.ogg", "death.mp3",
-                            "gameover.wav", "gameover.ogg", "gameover.mp3")
-            if cd:
-                try:
-                    self.sounds["dead"] = pygame.mixer.Sound(cd)
-                    print(f"[audio] 已加载自定义死亡音效：{cd}")
-                except Exception as e:
-                    print(f"[audio] 加载失败 {cd}: {e}")
-            cb = find_audio("boss.wav", "boss.ogg", "boss.mp3")
-            if cb:
-                try:
-                    self.sounds["boss"] = pygame.mixer.Sound(cb)
-                    print(f"[audio] 已加载自定义 BOSS 音效：{cb}")
-                except Exception as e:
-                    print(f"[audio] 加载失败 {cb}: {e}")
         except Exception:
             self.ok = False
 
@@ -212,51 +316,8 @@ class Audio:
 audio = Audio()
 
 # =========================================================
-# 存档
+# 元成长
 # =========================================================
-def load_save():
-    if os.path.exists(SAVE_FILE):
-        try:
-            with open(SAVE_FILE, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            return {
-                "best_mass": float(d.get("best_mass", 0)),
-                "best_score": float(d.get("best_score", 0)),
-                "unlocked": list(d.get("unlocked", [])),
-                "skin": int(d.get("skin", 0)),
-                "display_idx": int(d.get("display_idx", 0)) % len(DISPLAY_MODES),
-                "audio": bool(d.get("audio", True)),
-                "core_xp": float(d.get("core_xp", 0)),
-                "core_level": int(d.get("core_level", 1)),
-                "mode": str(d.get("mode", "classic")),
-                "no_shake": bool(d.get("no_shake", False)),
-                "seen_tutorial": bool(d.get("seen_tutorial", False)),
-                "volume": float(d.get("volume", 0.7)),
-                "colorblind": bool(d.get("colorblind", False)),
-                "show_minimap": bool(d.get("show_minimap", True)),
-                "stat_plays": int(d.get("stat_plays", 0)),
-                "stat_eaten": int(d.get("stat_eaten", 0)),
-                "stat_time": float(d.get("stat_time", 0)),
-                "stat_boss": int(d.get("stat_boss", 0)),
-                "stat_evolve": int(d.get("stat_evolve", 0)),
-            }
-        except Exception:
-            pass
-    return {"best_mass": 0.0, "best_score": 0.0, "unlocked": [], "skin": 0,
-            "display_idx": 0, "audio": True,
-            "core_xp": 0.0, "core_level": 1, "mode": "classic",
-            "no_shake": False, "seen_tutorial": False, "volume": 0.7,
-            "colorblind": False, "show_minimap": True,
-            "stat_plays": 0, "stat_eaten": 0, "stat_time": 0.0,
-            "stat_boss": 0, "stat_evolve": 0}
-
-def write_save(d):
-    try:
-        with open(SAVE_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
 def core_xp_needed(level):
     return 100 * level
 
@@ -567,7 +628,6 @@ def spawn_body(hole, level_mult=1.0, hunter_chance=0.0, level=1, chaos=False):
     return b
 
 def spawn_bonus_body(hole):
-    """奖励关专用金币球"""
     x = y = 0.0
     for _ in range(40):
         ang = random.uniform(0, math.tau)
@@ -607,6 +667,10 @@ def burst(particles, x, y, color, count, speed, base_vx=0, base_vy=0):
 # =========================================================
 def apply_display(idx):
     global display_surf, current_display_idx
+    if IS_WEB:
+        display_surf = pygame.display.set_mode((W, H))
+        current_display_idx = 0
+        return
     current_display_idx = idx % len(DISPLAY_MODES)
     name, size, fs = DISPLAY_MODES[current_display_idx]
     if fs:
@@ -925,20 +989,14 @@ def draw_evolution_menu(choices):
         screen.blit(kh, (r.x + (r.w - kh.get_width()) // 2, r.y + r.h - 30))
 
 # =========================================================
-# 关卡编辑器
+# 关卡编辑器（async）
 # =========================================================
-def run_editor(init_cam=(0, 0), save=None, toasts=None):
+async def run_editor(init_cam=(0, 0), save=None, toasts=None):
     if save is None: save = load_save()
     if toasts is None: toasts = []
-    bodies = []
+    bodies = level_load()
     cam_x, cam_y = init_cam
     preset_mass = 30
-    if os.path.exists(LEVEL_FILE):
-        try:
-            with open(LEVEL_FILE, "r", encoding="utf-8") as f:
-                bodies = json.load(f)
-        except Exception:
-            bodies = []
     msg, msg_timer = "", 0.0
     def set_msg(t):
         nonlocal msg, msg_timer
@@ -957,21 +1015,12 @@ def run_editor(init_cam=(0, 0), save=None, toasts=None):
                 elif event.key == pygame.K_c and not (mods & pygame.KMOD_CTRL):
                     bodies = []; set_msg("已清空")
                 elif event.key == pygame.K_s and (mods & pygame.KMOD_CTRL):
-                    try:
-                        with open(LEVEL_FILE, "w", encoding="utf-8") as f:
-                            json.dump(bodies, f, ensure_ascii=False, indent=2)
-                        set_msg(f"已保存 {len(bodies)} 个球体")
-                        unlock(save, "editor_save", toasts)
-                    except Exception as e:
-                        set_msg(f"保存失败：{e}")
+                    ok = level_save(bodies)
+                    set_msg(f"已保存 {len(bodies)} 个球体" if ok else "保存失败")
+                    if ok: unlock(save, "editor_save", toasts)
                 elif event.key == pygame.K_l and (mods & pygame.KMOD_CTRL):
-                    if os.path.exists(LEVEL_FILE):
-                        try:
-                            with open(LEVEL_FILE, "r", encoding="utf-8") as f:
-                                bodies = json.load(f)
-                            set_msg(f"已加载 {len(bodies)} 个球体")
-                        except Exception as e:
-                            set_msg(f"加载失败：{e}")
+                    bodies = level_load()
+                    set_msg(f"已加载 {len(bodies)} 个球体" if bodies else "没有存档")
             if event.type == pygame.MOUSEBUTTONDOWN:
                 lx, ly = screen_to_logical(event.pos)
                 wx, wy = lx + cam_x, ly + cam_y
@@ -1033,6 +1082,7 @@ def run_editor(init_cam=(0, 0), save=None, toasts=None):
             surf.set_alpha(int(255 * clamp(msg_timer / 0.5, 0, 1)))
             screen.blit(surf, (20, H - 40))
         present()
+        await asyncio.sleep(0)
 
 # =========================================================
 # 绘制
@@ -1215,11 +1265,11 @@ def draw_minimap(hole, bodies, powerups, cam_x, cam_y, cam_scale):
     return pygame.Rect(mm_x, mm_y, mm_w, mm_h)
 
 # =========================================================
-# 主游戏
+# 主游戏（async）
 # =========================================================
-def run_game():
+async def run_game():
     save = load_save()
-    if save["display_idx"] != current_display_idx:
+    if not IS_WEB and save["display_idx"] != current_display_idx:
         apply_display(save["display_idx"])
     audio.enabled = save["audio"]
     audio.master_vol = save.get("volume", 0.7)
@@ -1244,7 +1294,6 @@ def run_game():
     level_mult = 1.0
     boss_spawned_for_level = 0
 
-    # 奖励关状态
     bonus_active = False
     bonus_timer = 0.0
     bonus_score_start = 0.0
@@ -1404,9 +1453,10 @@ def run_game():
                         if rect.collidepoint(lx, ly):
                             audio.play("ui", 0.5)
                             if action == "cycle_display":
-                                apply_display(current_display_idx + 1)
-                                save["display_idx"] = current_display_idx
-                                write_save(save)
+                                if not IS_WEB:
+                                    apply_display(current_display_idx + 1)
+                                    save["display_idx"] = current_display_idx
+                                    write_save(save)
                             elif action == "toggle_audio":
                                 audio.enabled = not audio.enabled
                                 save["audio"] = audio.enabled
@@ -1514,17 +1564,13 @@ def run_game():
                         toasts.append(Toast(
                             f"皮肤：{SKINS[save['skin']]['name']}", 1.5))
                     elif event.key == pygame.K_l:
-                        if os.path.exists(LEVEL_FILE):
-                            try:
-                                with open(LEVEL_FILE, "r", encoding="utf-8") as f:
-                                    data = json.load(f)
-                                bodies = [Body(d["x"], d["y"], d["mass"])
-                                          for d in data]
-                                toasts.append(Toast(
-                                    f"已加载关卡：{len(bodies)} 球", 2.5))
-                                audio.play("level", 0.7)
-                            except Exception:
-                                pass
+                        data = level_load()
+                        if data:
+                            bodies = [Body(d["x"], d["y"], d["mass"])
+                                      for d in data]
+                            toasts.append(Toast(
+                                f"已加载关卡：{len(bodies)} 球", 2.5))
+                            audio.play("level", 0.7)
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = screen_to_logical(event.pos)
@@ -1592,7 +1638,6 @@ def run_game():
 
         for s in skills: s.update(dt)
 
-        # 奖励关计时
         if bonus_active:
             bonus_timer -= dt
             if bonus_timer <= 0:
@@ -1897,7 +1942,6 @@ def run_game():
                 if level >= 5:  unlock(save, "level_5", toasts)
                 if level >= 10: unlock(save, "level_10", toasts)
 
-                # 每 N 关触发奖励关
                 if level % BONUS_INTERVAL == 0 and not bonus_active:
                     bonus_active = True
                     bonus_timer = BONUS_DURATION
@@ -1905,7 +1949,6 @@ def run_game():
                     toasts.append(Toast("🎉 奖励关！全是金币球！", 3.0))
                     audio.play("level", 1.0)
                     set_shake(8)
-                    # 清掉危险球，只留金币
                     bodies = [b for b in bodies if b.mass <= hole.mass]
 
                 for threshold, choices in EVOLUTIONS:
@@ -1914,7 +1957,6 @@ def run_game():
                         evo_menu_open = True
                         break
 
-            # BOSS（奖励关期间不出现）
             if state == "play" and not bonus_active:
                 boss_exists = any(b.is_boss for b in bodies)
                 if level % 5 == 0 and not boss_exists \
@@ -1929,7 +1971,6 @@ def run_game():
                     set_shake(20)
                     audio.play("boss", 1.0)
 
-            # 补球
             if state == "play":
                 if bonus_active:
                     if len(bodies) < 35:
@@ -2024,7 +2065,7 @@ def run_game():
             for t in toasts:
                 t.life -= dt
 
-        # 相机（动态缩放）
+        # 相机
         if hole.mass <= ZOOM_START_MASS:
             z_target = 1.0
         elif hole.mass >= ZOOM_END_MASS:
@@ -2050,9 +2091,7 @@ def run_game():
         if hole.flash > 0:
             hole.flash = max(0, hole.flash - dt * 3)
 
-        # =====================================================
         # 渲染
-        # =====================================================
         screen.fill((5, 5, 15))
         draw_nebula(cam_x, cam_y, cam_scale)
 
@@ -2072,7 +2111,6 @@ def run_game():
                                int(hole.radius * cam_scale * 6))
             screen.blit(ds, (0, 0))
 
-        # 奖励关全屏金色氛围
         if bonus_active:
             warm = pygame.Surface((W, H), pygame.SRCALPHA)
             warm.fill((255, 200, 60, 18))
@@ -2209,7 +2247,6 @@ def run_game():
             screen.blit(f_xs.render(f"视角 {zoom_pct}%", True,
                                     (150, 180, 230)), (240, 104))
 
-        # 奖励关 HUD
         if bonus_active:
             banner_h = 56
             banner = pygame.Surface((W, banner_h), pygame.SRCALPHA)
@@ -2338,8 +2375,27 @@ def run_game():
                 screen.blit(txt, (rect.x + (rect.w - txt.get_width()) // 2,
                                   rect.y + (rect.h - txt.get_height()) // 2))
 
+        # 小地图
         if show_minimap and state == "play":
             draw_minimap(hole, bodies, powerups, cam_x, cam_y, cam_scale)
+
+        # Toast（小地图之后，从下方开始）
+        ty = 24
+        if show_minimap and state == "play":
+            ty = 20 + 150 + 14
+
+        for t in toasts:
+            a = clamp(t.life / min(0.5, t.max_life), 0, 1)
+            surf = f_md.render(t.text, True, (255, 230, 140))
+            surf.set_alpha(int(255 * a))
+            bg = pygame.Surface((surf.get_width() + 24,
+                                 surf.get_height() + 12), pygame.SRCALPHA)
+            bg.fill((30, 20, 60, int(180 * a)))
+            pygame.draw.rect(bg, (255, 210, 100, int(200 * a)),
+                             bg.get_rect(), 1, border_radius=6)
+            screen.blit(bg, (W - bg.get_width() - 26, ty))
+            screen.blit(surf, (W - bg.get_width() - 14, ty + 6))
+            ty += bg.get_height() + 8
 
         if timed and time_left is not None:
             tl = max(0, time_left)
@@ -2375,20 +2431,6 @@ def run_game():
             "WASD 移动 · 摇杆拖动 · Space 冲刺 · Q 无敌 · E 爆发 · F 炸弹 · "
             "P 暂停 · F3 帮助 · ESC 选项",
             True, (140, 140, 190)), (26, H - 24))
-
-        ty = 24
-        for t in toasts:
-            a = clamp(t.life / min(0.5, t.max_life), 0, 1)
-            surf = f_md.render(t.text, True, (255, 230, 140))
-            surf.set_alpha(int(255 * a))
-            bg = pygame.Surface((surf.get_width() + 24,
-                                 surf.get_height() + 12), pygame.SRCALPHA)
-            bg.fill((30, 20, 60, int(180 * a)))
-            pygame.draw.rect(bg, (255, 210, 100, int(200 * a)),
-                             bg.get_rect(), 1, border_radius=6)
-            screen.blit(bg, (W - bg.get_width() - 26, ty))
-            screen.blit(surf, (W - bg.get_width() - 14, ty + 6))
-            ty += bg.get_height() + 8
 
         if state == "dead":
             alpha = min(180, int(death_timer * 180))
@@ -2489,23 +2531,23 @@ def run_game():
         if help_open:       draw_help_page(save)
 
         present()
+        await asyncio.sleep(0)
 
 # =========================================================
-# 主程序
+# 主程序（async）
 # =========================================================
-def main():
+async def main():
     while True:
-        r = run_game()
+        r = await run_game()
         if r == "quit":
             break
         if r == "editor":
             save = load_save()
             toasts = []
-            er = run_editor((0, 0), save, toasts)
+            er = await run_editor((0, 0), save, toasts)
             if er == "quit":
                 break
     pygame.quit()
-    sys.exit()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
