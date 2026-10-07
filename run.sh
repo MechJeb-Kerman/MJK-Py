@@ -12,7 +12,7 @@ set -u
 
 # -------- 路径（脚本自身所在目录） --------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GAME_DIR="$SCRIPT_DIR/HELLO"
+GAME_DIR="$SCRIPT_DIR/HELLO/game"
 VNC_PORT=5900
 WEB_PORT=6080
 DISPLAY_NUM=:99
