@@ -76,7 +76,7 @@ if not IS_WEB:
 pygame.init()
 
 if IS_WEB:
-    AUDIO_OK = False           # ← Web 上强制静音
+    AUDIO_OK = False          # Web 强制静音，绕过浏览器音频策略
 else:
     AUDIO_OK = pygame.mixer.get_init() is not None
     if not AUDIO_OK:
@@ -84,8 +84,7 @@ else:
             pygame.mixer.init(22050, -16, 1, 256)
             AUDIO_OK = True
         except Exception:
-            AUDIO_OK = False
-pygame.display.set_caption("Black Hole · 黑洞吞噬 v0.4.6.w")
+            AUDIO_OK = Falsepygame.display.set_caption("Black Hole · 黑洞吞噬 v0.4.6.w")
 clock = pygame.time.Clock()
 canvas = pygame.Surface((W, H))
 screen = canvas
