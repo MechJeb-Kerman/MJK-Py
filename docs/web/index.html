@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Black Hole · 黑洞吞噬 v0.5.0</title>
+<title>Black Hole · 黑洞吞噬 v0.5.1</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -20,7 +20,7 @@
     position: absolute; inset: 0; display: flex;
     align-items: center; justify-content: center;
     color: #aab; font-size: 20px; background: #05050f;
-    z-index: 10;
+    z-index: 10; cursor: pointer;
   }
 </style>
 </head>
@@ -39,7 +39,7 @@ const WORLD_W = 3200, WORLD_H = 2400;
 const FPS = 60;
 const BODY_COUNT = 46;
 const G_RANGE = 700;
-const SAVE_KEY = "blackhole_save_v050";
+const SAVE_KEY = "blackhole_save_v051";
 
 const ZOOM_START_MASS = 2000;
 const ZOOM_END_MASS = 20000;
@@ -281,7 +281,6 @@ function pickKind(level) {
   if (level < 2) return "normal";
   const p = clamp(0.08 + (level - 2) * 0.03, 0, 0.35);
   if (Math.random() > p) return "normal";
-  // 加权抽样
   let total = 0;
   const ws = KIND_LIST.slice(1).map(k => { total += BODY_KINDS[k].w; return BODY_KINDS[k].w; });
   let r = Math.random() * total;
@@ -543,11 +542,10 @@ function burst(particles, x, y, color, count, speed, bvx = 0, bvy = 0) {
 }
 
 // =========================================================
-// 主游戏状态
+// Canvas 初始化
 // =========================================================
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
-let logicalW = W, logicalH = H;
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -557,16 +555,14 @@ function resize() {
   canvas.height = ch * dpr;
   canvas.style.width = cw + "px";
   canvas.style.height = ch + "px";
-  logicalW = W;
-  logicalH = H;
-  ctx.setTransform(
-    dpr * cw / W, 0, 0, dpr * ch / H, 0, 0
-  );
+  ctx.setTransform(dpr * cw / W, 0, 0, dpr * ch / H, 0, 0);
 }
 window.addEventListener("resize", resize);
 resize();
 
-// 输入状态
+// =========================================================
+// 输入
+// =========================================================
 const keys = {};
 const mouse = { x: 0, y: 0, down: false };
 const joystick = {
@@ -584,9 +580,79 @@ function screenToLogical(clientX, clientY) {
   ];
 }
 
+// ---- 统一的指针处理 ----
+function handlePointerDown(lx, ly) {
+  mouse.x = lx; mouse.y = ly;
+  mouse.down = true;
+  onPointerDown(lx, ly);
+}
+
+function handlePointerMove(lx, ly) {
+  mouse.x = lx; mouse.y = ly;
+  // ★ 关键修复：拖动时实时更新摇杆方向
+  if (joystick.active) {
+    const dx = lx - joystick.cx;
+    const dy = ly - joystick.cy;
+    const jd = Math.hypot(dx, dy);
+    if (jd > 1) {
+      const mag = Math.min(jd, joystick.rOut) / joystick.rOut;
+      joystick.vec = [dx / jd * mag, dy / jd * mag];
+    } else {
+      joystick.vec = [0, 0];
+    }
+  }
+}
+
+function handlePointerUp() {
+  mouse.down = false;
+  onPointerUp();
+}
+
+// ---- 鼠标 ----
+canvas.addEventListener("mousedown", e => {
+  const [lx, ly] = screenToLogical(e.clientX, e.clientY);
+  handlePointerDown(lx, ly);
+});
+canvas.addEventListener("mousemove", e => {
+  const [lx, ly] = screenToLogical(e.clientX, e.clientY);
+  handlePointerMove(lx, ly);
+});
+// ★ 用 window 监听 mouseup，避免鼠标移出画布后摇杆卡住
+window.addEventListener("mouseup", () => {
+  handlePointerUp();
+});
+
+// ---- 触摸 ----
+canvas.addEventListener("touchstart", e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  const [lx, ly] = screenToLogical(t.clientX, t.clientY);
+  handlePointerDown(lx, ly);
+}, { passive: false });
+
+canvas.addEventListener("touchmove", e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  const [lx, ly] = screenToLogical(t.clientX, t.clientY);
+  handlePointerMove(lx, ly);
+}, { passive: false });
+
+canvas.addEventListener("touchend", e => {
+  e.preventDefault();
+  handlePointerUp();
+}, { passive: false });
+
+canvas.addEventListener("touchcancel", e => {
+  e.preventDefault();
+  handlePointerUp();
+}, { passive: false });
+
+// ---- 键盘 ----
 window.addEventListener("keydown", e => {
-  keys[e.key.toLowerCase()] = true;
-  if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(e.key.toLowerCase())) {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  handleKeyDown(k);
+  if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) {
     e.preventDefault();
   }
 });
@@ -594,44 +660,7 @@ window.addEventListener("keyup", e => {
   keys[e.key.toLowerCase()] = false;
 });
 
-canvas.addEventListener("mousedown", e => {
-  const [lx, ly] = screenToLogical(e.clientX, e.clientY);
-  mouse.x = lx; mouse.y = ly;
-  mouse.down = true;
-  onPointerDown(lx, ly);
-});
-canvas.addEventListener("mousemove", e => {
-  const [lx, ly] = screenToLogical(e.clientX, e.clientY);
-  mouse.x = lx; mouse.y = ly;
-});
-canvas.addEventListener("mouseup", e => {
-  mouse.down = false;
-  onPointerUp();
-});
-
-canvas.addEventListener("touchstart", e => {
-  e.preventDefault();
-  const t = e.touches[0];
-  const [lx, ly] = screenToLogical(t.clientX, t.clientY);
-  mouse.x = lx; mouse.y = ly;
-  mouse.down = true;
-  onPointerDown(lx, ly);
-}, { passive: false });
-
-canvas.addEventListener("touchmove", e => {
-  e.preventDefault();
-  const t = e.touches[0];
-  const [lx, ly] = screenToLogical(t.clientX, t.clientY);
-  mouse.x = lx; mouse.y = ly;
-}, { passive: false });
-
-canvas.addEventListener("touchend", e => {
-  e.preventDefault();
-  mouse.down = false;
-  onPointerUp();
-}, { passive: false });
-
-// 手柄
+// ---- 手柄 ----
 const gamepad = {
   connected: false, index: -1,
   btnPrev: {},
@@ -655,15 +684,6 @@ function pollGamepad() {
     if (p) return p;
   }
   return null;
-}
-
-// 按钮回调
-let clickHandlers = {};
-function onPointerDown(lx, ly) {
-  if (clickHandlers.down) clickHandlers.down(lx, ly);
-}
-function onPointerUp() {
-  if (clickHandlers.up) clickHandlers.up();
 }
 
 // =========================================================
@@ -768,7 +788,6 @@ function initGame() {
   G.invuln = new Skill("无敌", 25.0, 2.0 + G.evo.invuln_bonus);
   G.burst_sk = new Skill("引力爆发", 22.0, 2.5, 0.15);
 
-  // 技能按钮
   const SKILL_BOX_W = 118, SKILL_BOX_H = 62;
   const SKILL_BOX_X0 = 26, SKILL_BOX_Y = 230, SKILL_GAP = 12;
   G.skill_boxes = [0,1,2].map(i => ({
@@ -823,13 +842,10 @@ function dropBomb() {
 function update(dt) {
   if (!G.hole) return;
 
-  // ---- 输入 ----
+  // ---- 手柄 ----
   let pad = null;
-  if (gamepad.connected || navigator.getGamepads) {
-    pad = pollGamepad();
-  }
+  if (navigator.getGamepads) pad = pollGamepad();
 
-  // 手柄热插拔检测
   if (pad && !gamepad.connected) {
     gamepad.connected = true;
     G.toasts.push(new Toast("🎮 手柄已连接", 2.5));
@@ -839,7 +855,6 @@ function update(dt) {
     G.toasts.push(new Toast("🎮 手柄已断开", 2.0));
   }
 
-  // 手柄按键（边沿触发）
   if (pad) {
     for (let i = 0; i < pad.buttons.length; i++) {
       const pressed = pad.buttons[i].pressed;
@@ -847,7 +862,6 @@ function update(dt) {
       if (pressed && !prev) handleGamepadButton(i);
       gamepad.btnPrev[i] = pressed;
     }
-    // 左摇杆
     const ax = Math.abs(pad.axes[0]) > gamepad.deadzone ? pad.axes[0] : 0;
     const ay = Math.abs(pad.axes[1]) > gamepad.deadzone ? pad.axes[1] : 0;
     gamepad.axes = [ax, ay];
@@ -855,22 +869,15 @@ function update(dt) {
     gamepad.axes = [0, 0];
   }
 
-  // 暂停状态
   const paused = G.options_open || G.evo_menu_open || G.mode_menu_open ||
                  G.paused_manual || G.tutorial_open || G.help_open;
 
-  if (paused) {
-    G.time += 0;  // 暂停时不计时
-  } else {
-    G.time += dt;
-  }
+  if (!paused) G.time += dt;
 
-  // 技能更新
   if (G.dash) G.dash.update(dt);
   if (G.invuln) G.invuln.update(dt);
   if (G.burst_sk) G.burst_sk.update(dt);
 
-  // 奖励关计时
   if (G.bonus_active && !paused) {
     G.bonus_timer -= dt;
     if (G.bonus_timer <= 0) {
@@ -923,7 +930,6 @@ function update(dt) {
     if (keys["w"] || keys["arrowup"]) kdy -= 1;
     if (keys["s"] || keys["arrowdown"]) kdy += 1;
 
-    // 手柄摇杆
     if (gamepad.axes[0] || gamepad.axes[1]) {
       kdx = gamepad.axes[0];
       kdy = gamepad.axes[1];
@@ -963,12 +969,10 @@ function update(dt) {
     G.trail.push([G.hole.x, G.hole.y, 0.4]);
   }
 
-  // 尾迹衰减
   G.trail = G.trail.filter(t => t[2] - dt > 0).map(t => [t[0], t[1], t[2] - dt]);
   if (G.trail.length > 24) G.trail = G.trail.slice(-24);
 
   const reverse = G.event_name === "reverse";
-  const dark = G.event_name === "dark";
 
   let g_range = G_RANGE * G.evo.grav_range;
   let g_power = G.evo.grav_power;
@@ -1030,13 +1034,11 @@ function update(dt) {
         b.vy += rand(-200, 200);
       }
 
-      // 阻尼
       b.vx *= (1 - 0.35 * dt);
       b.vy *= (1 - 0.35 * dt);
       b.x += b.vx * dt;
       b.y += b.vy * dt;
 
-      // 潮汐
       if (G.event_name === "tide") {
         const cx = WORLD_W / 2, cy = WORLD_H / 2;
         const dxc = cx - b.x, dyc = cy - b.y;
@@ -1045,14 +1047,12 @@ function update(dt) {
         b.vy += dyc / dc * 120 * dt;
       }
 
-      // 边界
       const m = b.radius;
       if (b.x < m) { b.x = m; b.vx = Math.abs(b.vx) * 0.6; }
       else if (b.x > WORLD_W - m) { b.x = WORLD_W - m; b.vx = -Math.abs(b.vx) * 0.6; }
       if (b.y < m) { b.y = m; b.vy = Math.abs(b.vy) * 0.6; }
       else if (b.y > WORLD_H - m) { b.y = WORLD_H - m; b.vy = -Math.abs(b.vy) * 0.6; }
 
-      // 吞噬判定
       const dx = G.hole.x - b.x, dy = G.hole.y - b.y;
       const dist = Math.max(Math.hypot(dx, dy), 1e-4);
 
@@ -1062,7 +1062,6 @@ function update(dt) {
       }
 
       if (G.state === "play" && dist < G.hole.radius + b.radius * 0.35) {
-        // 精准模式
         if (G.save.mode === "precision" && b.kind !== G.target_color && b.kind !== "normal") {
           if (G.invuln.active) { survivors.push(b); continue; }
           G.state = "dead";
@@ -1091,7 +1090,6 @@ function update(dt) {
             unlock(G.save, "collector", G.toasts);
           }
 
-          // 飘字
           const dy_off = -b.radius - 12;
           G.float_texts.push(new FloatText(
             b.x, b.y + dy_off, `+${Math.floor(gain)}`, [200, 255, 200], 0.9));
@@ -1111,7 +1109,6 @@ function update(dt) {
                 Math.min(70, Math.floor(5 + b.radius * 0.9)),
                 280, b.vx, b.vy);
 
-          // 特殊球效果
           if (b.kind === "ice") {
             G.buff_ice = 2.0;
             G.toasts.push(new Toast("❄ 减速", 1.0));
@@ -1150,7 +1147,6 @@ function update(dt) {
           else audio.play("eat", 0.35);
           unlock(G.save, "first_blood", G.toasts);
 
-          // BOSS 分裂
           if (b.is_boss) {
             audio.play("nova", 1.0);
             G.save.stat_boss++;
@@ -1390,7 +1386,6 @@ function update(dt) {
         G.save.best_score = Math.max(G.save.best_score, G.score);
         G.save.stat_plays++;
         G.save.stat_time += G.time;
-        // 元成长
         G.save.core_xp += G.score / 10;
         while (G.save.core_xp >= 100 * G.save.core_level) {
           G.save.core_xp -= 100 * G.save.core_level;
@@ -1402,7 +1397,6 @@ function update(dt) {
       }
     }
 
-    // Toast 更新
     G.toasts = G.toasts.filter(t => {
       t.life -= dt;
       return t.life > 0;
@@ -1435,12 +1429,11 @@ function update(dt) {
 }
 
 // =========================================================
-// 手柄按键处理
+// 手柄按键
 // =========================================================
 function handleGamepadButton(idx) {
-  if (G.state === "play") {
-    G.used_gamepad = true;
-  }
+  if (G.state === "play") G.used_gamepad = true;
+
   if (G.tutorial_open) {
     G.tutorial_open = false;
     G.save.seen_tutorial = true;
@@ -1485,8 +1478,8 @@ function selectEvo(i) {
 // =========================================================
 // 点击处理
 // =========================================================
-clickHandlers.down = (lx, ly) => {
-  audio.init(); // 首次点击时初始化音频
+function onPointerDown(lx, ly) {
+  audio.init();
 
   if (G.tutorial_open) {
     G.tutorial_open = false;
@@ -1497,7 +1490,6 @@ clickHandlers.down = (lx, ly) => {
   }
 
   if (G.help_open) {
-    // 返回按钮
     if (lx > W/2 - 130 && lx < W/2 + 130 && ly > H - 80 && ly < H - 36) {
       G.help_open = false;
       G.options_open = true;
@@ -1507,7 +1499,6 @@ clickHandlers.down = (lx, ly) => {
   }
 
   if (G.options_open) {
-    // 音量滑块
     const slider = { x: W/2 - 200, y: 500, w: 400, h: 8 };
     const sliderHit = { x: slider.x - 6, y: slider.y - 14, w: slider.w + 12, h: slider.h + 28 };
     if (lx >= sliderHit.x && lx <= sliderHit.x + sliderHit.w &&
@@ -1518,7 +1509,6 @@ clickHandlers.down = (lx, ly) => {
       writeSave(G.save);
       return;
     }
-    // 选项按钮
     const buttons = getOptionButtons(G.save);
     for (const [r, label, action] of buttons) {
       if (lx >= r.x && lx <= r.x + r.w && ly >= r.y && ly <= r.y + r.h) {
@@ -1556,7 +1546,6 @@ clickHandlers.down = (lx, ly) => {
   }
 
   if (G.state === "play") {
-    // 暂停/菜单按钮
     if (lx >= BTN_PAUSE.x && lx <= BTN_PAUSE.x + BTN_PAUSE.w &&
         ly >= BTN_PAUSE.y && ly <= BTN_PAUSE.y + BTN_PAUSE.h) {
       G.paused_manual = !G.paused_manual;
@@ -1569,7 +1558,6 @@ clickHandlers.down = (lx, ly) => {
       audio.play("ui", 0.5);
       return;
     }
-    // 技能按钮
     const sk = [G.dash, G.invuln, G.burst_sk];
     for (let i = 0; i < G.skill_boxes.length; i++) {
       const b = G.skill_boxes[i];
@@ -1578,7 +1566,6 @@ clickHandlers.down = (lx, ly) => {
         return;
       }
     }
-    // 摇杆
     const dx = lx - joystick.cx;
     const dy = ly - joystick.cy;
     if (dx * dx + dy * dy < joystick.rOut * joystick.rOut) {
@@ -1596,21 +1583,21 @@ clickHandlers.down = (lx, ly) => {
       return;
     }
     if (lx >= r2.x && lx <= r2.x + r2.w && ly >= r2.y && ly <= r2.y + r2.h) {
-      const keys_ = Object.keys(GAME_MODES);
+      const ks = Object.keys(GAME_MODES);
       const cur = G.save.mode;
-      const next = keys_[(keys_.indexOf(cur) + 1) % keys_.length];
+      const next = ks[(ks.indexOf(cur) + 1) % ks.length];
       G.save.mode = next;
       writeSave(G.save);
       restartGame();
       return;
     }
   }
-};
+}
 
-clickHandlers.up = () => {
+function onPointerUp() {
   joystick.active = false;
   joystick.vec = [0, 0];
-};
+}
 
 function handleOptionAction(action) {
   if (action === "toggle_audio") {
@@ -1637,7 +1624,6 @@ function handleOptionAction(action) {
   } else if (action === "quit") {
     G.save.stat_time += G.time;
     writeSave(G.save);
-    // 刷新页面作为退出
     location.reload();
   }
 }
@@ -1648,6 +1634,53 @@ function restartGame() {
 }
 
 // =========================================================
+// 键盘事件
+// =========================================================
+function handleKeyDown(k) {
+  if (G.tutorial_open) {
+    G.tutorial_open = false;
+    G.save.seen_tutorial = true;
+    writeSave(G.save);
+    audio.play("ui", 0.5);
+    return;
+  }
+  if (G.help_open) {
+    if (k === "f3") { G.help_open = false; audio.play("ui", 0.5); }
+    else if (k === "escape") { G.help_open = false; G.options_open = true; audio.play("ui", 0.5); }
+    return;
+  }
+  if (G.options_open) {
+    if (k === "escape") { G.options_open = false; audio.play("ui", 0.5); }
+    return;
+  }
+  if (G.mode_menu_open) {
+    if (k === "escape") G.mode_menu_open = false;
+    return;
+  }
+  if (G.evo_menu_open) {
+    if (k === "1") selectEvo(0);
+    else if (k === "2") selectEvo(1);
+    return;
+  }
+  if (k === "escape") { G.options_open = true; audio.play("ui", 0.5); return; }
+  if (k === "f3") { G.help_open = true; audio.play("ui", 0.5); return; }
+  if (k === "p") { G.paused_manual = !G.paused_manual; audio.play("ui", 0.5); return; }
+  if (G.state === "dead" && k === "r") { restartGame(); return; }
+  if (G.state === "play" && !G.paused_manual) {
+    if (k === " ") tryUseSkill(G.dash);
+    else if (k === "q") tryUseSkill(G.invuln);
+    else if (k === "e") tryUseSkill(G.burst_sk);
+    else if (k === "f") dropBomb();
+    else if (k === "f1") {
+      const n = unlockedSkins(G.save);
+      G.save.skin = (G.save.skin + 1) % n;
+      writeSave(G.save);
+      G.toasts.push(new Toast(`皮肤：${SKINS[G.save.skin].name}`, 1.5));
+    }
+  }
+}
+
+// =========================================================
 // 菜单布局
 // =========================================================
 function getOptionButtons(save) {
@@ -1655,20 +1688,13 @@ function getOptionButtons(save) {
   let y = 90;
   const gap = 6;
   const items = [];
-  items.push([{x, y, w: bw, h: bh}, "音效：" + (audio.enabled ? "开" : "关"), "toggle_audio"]);
-  y += bh + gap;
-  items.push([{x, y, w: bw, h: bh}, "屏幕震动：" + (save.no_shake ? "关" : "开"), "toggle_shake"]);
-  y += bh + gap;
-  items.push([{x, y, w: bw, h: bh}, "色盲辅助：" + (save.colorblind ? "开" : "关"), "toggle_cb"]);
-  y += bh + gap;
-  items.push([{x, y, w: bw, h: bh}, "小地图：" + (save.show_minimap ? "开" : "关"), "toggle_map"]);
-  y += bh + gap;
-  items.push([{x, y, w: bw, h: bh}, "帮助 (F3)", "help"]);
-  y += bh + gap;
-  items.push([{x, y, w: bw, h: bh}, "返回主菜单", "menu"]);
-  y += bh + gap;
-  items.push([{x, y, w: bw, h: bh}, "继续游戏 (ESC)", "resume"]);
-  y += bh + gap;
+  items.push([{x, y, w: bw, h: bh}, "音效：" + (audio.enabled ? "开" : "关"), "toggle_audio"]); y += bh + gap;
+  items.push([{x, y, w: bw, h: bh}, "屏幕震动：" + (save.no_shake ? "关" : "开"), "toggle_shake"]); y += bh + gap;
+  items.push([{x, y, w: bw, h: bh}, "色盲辅助：" + (save.colorblind ? "开" : "关"), "toggle_cb"]); y += bh + gap;
+  items.push([{x, y, w: bw, h: bh}, "小地图：" + (save.show_minimap ? "开" : "关"), "toggle_map"]); y += bh + gap;
+  items.push([{x, y, w: bw, h: bh}, "帮助 (F3)", "help"]); y += bh + gap;
+  items.push([{x, y, w: bw, h: bh}, "返回主菜单", "menu"]); y += bh + gap;
+  items.push([{x, y, w: bw, h: bh}, "继续游戏 (ESC)", "resume"]); y += bh + gap;
   items.push([{x, y, w: bw, h: bh}, "退出游戏", "quit"]);
   return items;
 }
@@ -1701,13 +1727,10 @@ function getEvoButtons() {
 function render() {
   if (!G.hole) return;
 
-  ctx.save();
   ctx.fillStyle = "#05050f";
   ctx.fillRect(0, 0, W, H);
 
   const cam = G.cam_x, camY = G.cam_y, cs = G.cam_scale;
-  const cs_ = (x) => (x - cam) * cs;
-  const csY = (y) => (y - camY) * cs;
 
   // 星云
   for (const n of NEBULAS) {
@@ -1742,7 +1765,7 @@ function render() {
     ctx.fillRect(0, 0, W, H);
     ctx.globalCompositeOperation = "destination-out";
     ctx.beginPath();
-    ctx.arc(cs_(G.hole.x), csY(G.hole.y), G.hole.radius * cs * 6, 0, TAU);
+    ctx.arc((G.hole.x - cam) * cs, (G.hole.y - camY) * cs, G.hole.radius * cs * 6, 0, TAU);
     ctx.fill();
     ctx.restore();
   }
@@ -1918,17 +1941,13 @@ function render() {
     ctx.fillRect(0, 0, W, H);
   }
 
-  // HUD
   drawHUD();
 
-  // 覆盖层
   if (G.tutorial_open) drawTutorial();
   if (G.options_open) drawOptionsMenu();
   if (G.help_open) drawHelpPage();
   if (G.mode_menu_open) drawModeMenu();
   if (G.evo_menu_open) drawEvoMenu();
-
-  ctx.restore();
 }
 
 function drawBody(b, sx, sy, r) {
@@ -1938,7 +1957,6 @@ function drawBody(b, sx, sy, r) {
     if (a < 0.2 && G.state === "play") return;
   }
 
-  const glow = [b.color[0] >> 2, b.color[1] >> 2, b.color[2] >> 2];
   const grad = ctx.createRadialGradient(sx, sy, r * 0.5, sx, sy, r * 1.8);
   grad.addColorStop(0, `rgba(${b.color[0]},${b.color[1]},${b.color[2]},0.35)`);
   grad.addColorStop(1, `rgba(${b.color[0]},${b.color[1]},${b.color[2]},0)`);
@@ -1952,13 +1970,11 @@ function drawBody(b, sx, sy, r) {
   ctx.arc(sx, sy, r, 0, TAU);
   ctx.fill();
 
-  // 高光
   ctx.fillStyle = `rgba(255,255,255,0.55)`;
   ctx.beginPath();
   ctx.arc(sx - r * 0.3, sy - r * 0.3, r * 0.34, 0, TAU);
   ctx.fill();
 
-  // 特殊球标识
   if (b.kind !== "normal" && !b.is_boss) {
     const tint = BODY_KINDS[b.kind].tint;
     if (tint) {
@@ -2011,7 +2027,6 @@ function drawBody(b, sx, sy, r) {
     }
   }
 
-  // BOSS / 追踪者外圈
   if (b.is_boss) {
     ctx.strokeStyle = "rgba(255,220,100,0.9)";
     ctx.lineWidth = 3;
@@ -2034,7 +2049,6 @@ function drawBody(b, sx, sy, r) {
     ctx.beginPath();
     ctx.arc(sx, sy, r + 3, 0, TAU);
     ctx.stroke();
-    // 视野轨迹
     if (G.evo.vision) {
       const dx = (G.hole.x - G.cam_x) * G.cam_scale - sx;
       const dy = (G.hole.y - G.cam_y) * G.cam_scale - sy;
@@ -2050,7 +2064,6 @@ function drawBody(b, sx, sy, r) {
     }
   }
 
-  // 危险环
   if (G.state === "play" && b.mass > G.hole.mass && !b.is_boss) {
     ctx.strokeStyle = "rgba(255,70,70,0.9)";
     ctx.lineWidth = 2;
@@ -2061,7 +2074,6 @@ function drawBody(b, sx, sy, r) {
 }
 
 function drawHole(hx, hy, hr, skin) {
-  // 尾迹
   for (const [tx_w, ty_w, life] of G.trail) {
     const a = life / 0.4;
     if (a <= 0) continue;
@@ -2078,7 +2090,6 @@ function drawHole(hx, hy, hr, skin) {
     ctx.fill();
   }
 
-  // 光晕
   for (let i = 4; i >= 1; i--) {
     const gr = hr * (1.5 + i * 0.5);
     if (gr < 2) continue;
@@ -2092,7 +2103,6 @@ function drawHole(hx, hy, hr, skin) {
     ctx.fill();
   }
 
-  // 吸积盘
   for (let i = 0; i < 3; i++) {
     const rr = hr * (1.32 + i * 0.30);
     if (rr < 3) continue;
@@ -2104,14 +2114,12 @@ function drawHole(hx, hy, hr, skin) {
     ctx.stroke();
   }
 
-  // 事件视界
   ctx.strokeStyle = rgbStr(skin.ring);
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(hx, hy, hr * 1.16, 0, TAU);
   ctx.stroke();
 
-  // 黑洞本体
   ctx.fillStyle = rgbStr(skin.inner);
   ctx.beginPath();
   ctx.arc(hx, hy, hr, 0, TAU);
@@ -2122,7 +2130,6 @@ function drawHole(hx, hy, hr, skin) {
   ctx.arc(hx, hy, hr, 0, TAU);
   ctx.stroke();
 
-  // 无敌环
   if (G.invuln.active) {
     const pulse = 0.5 + 0.5 * Math.sin(G.time * 14);
     ctx.strokeStyle = "rgba(120,255,200,0.9)";
@@ -2132,7 +2139,6 @@ function drawHole(hx, hy, hr, skin) {
     ctx.stroke();
   }
 
-  // 闪光
   if (G.hole.flash > 0) {
     ctx.strokeStyle = `rgba(255,240,200,${G.hole.flash})`;
     ctx.lineWidth = 3;
@@ -2161,7 +2167,6 @@ function drawHUD() {
     ctx.fillText(`视角 ${Math.floor(G.cam_scale * 100)}%`, 240, 118);
   }
 
-  // 关卡进度条
   const prev_t = G.level > 1 ? G.level_target / 1.9 : 22.0;
   const ratio = clamp((G.hole.mass - prev_t) / Math.max(1, G.level_target - prev_t), 0, 1);
   const bw = 220, bh = 8, byy = 134;
@@ -2175,7 +2180,6 @@ function drawHUD() {
     ctx.fillRect(26 + i, byy, 1, bh);
   }
 
-  // 状态徽章
   const badges = [];
   if (G.combo >= 3) badges.push([`×${G.combo} 连噬`, [255, 200, 100]]);
   if (G.buff_ice > 0) badges.push([`❄ ${G.buff_ice.toFixed(1)}s`, [120, 200, 255]]);
@@ -2307,10 +2311,8 @@ function drawHUD() {
     }
   }
 
-  // 小地图
   if (G.save.show_minimap && G.state === "play") drawMinimap();
 
-  // Toast
   let ty = 24;
   if (G.save.show_minimap && G.state === "play") ty = 20 + 150 + 14;
 
@@ -2318,20 +2320,19 @@ function drawHUD() {
     const a = clamp(t.life / Math.min(0.5, t.max_life), 0, 1);
     ctx.font = "bold 18px sans-serif";
     const tw = ctx.measureText(t.text).width;
-    const bw = tw + 24, bh = 32;
+    const bw2 = tw + 24, bh2 = 32;
     ctx.fillStyle = `rgba(30,20,60,${a * 0.85})`;
-    roundRect(W - bw - 26, ty, bw, bh, 6);
+    roundRect(W - bw2 - 26, ty, bw2, bh2, 6);
     ctx.fill();
     ctx.strokeStyle = `rgba(255,210,100,${a})`;
     ctx.lineWidth = 1;
-    roundRect(W - bw - 26, ty, bw, bh, 6);
+    roundRect(W - bw2 - 26, ty, bw2, bh2, 6);
     ctx.stroke();
     ctx.fillStyle = `rgba(255,230,140,${a})`;
-    ctx.fillText(t.text, W - bw - 14, ty + 22);
-    ty += bh + 6;
+    ctx.fillText(t.text, W - bw2 - 14, ty + 22);
+    ty += bh2 + 6;
   }
 
-  // 倒计时 / 事件 / 暂停 / 底部提示
   if (G.save.mode === "timed" && G.state === "play") {
     const tl = Math.max(0, G.time_left);
     const m = Math.floor(tl / 60);
@@ -2376,7 +2377,6 @@ function drawHUD() {
     ctx.textAlign = "left";
   }
 
-  // 奖励关横幅
   if (G.bonus_active) {
     const grad = ctx.createLinearGradient(0, 0, 0, 56);
     grad.addColorStop(0, "rgba(255,200,50,0.4)");
@@ -2395,16 +2395,15 @@ function drawHUD() {
     ctx.fillText(`${G.bonus_timer.toFixed(1)}s`, W / 2 + 130, 42);
 
     const bar_w = 360;
-    const ratio = Math.max(0, G.bonus_timer / BONUS_DURATION);
-    const bx = W / 2 - bar_w / 2;
+    const ratio2 = Math.max(0, G.bonus_timer / BONUS_DURATION);
+    const bx2 = W / 2 - bar_w / 2;
     ctx.fillStyle = "rgba(60,40,10,0.9)";
-    ctx.fillRect(bx, 48, bar_w, 6);
+    ctx.fillRect(bx2, 48, bar_w, 6);
     ctx.fillStyle = "rgba(255,210,60,1)";
-    ctx.fillRect(bx, 48, bar_w * ratio, 6);
+    ctx.fillRect(bx2, 48, bar_w * ratio2, 6);
     ctx.textAlign = "left";
   }
 
-  // 底部提示
   const hint = gamepad.connected
     ? "🎮 左摇杆 移动 · A 冲刺 · B 无敌 · X 爆发 · Y 炸弹 · Start 暂停 · Back 菜单"
     : "WASD 移动 · 摇杆拖动 · Space 冲刺 · Q 无敌 · E 爆发 · F 炸弹 · P 暂停 · F3 帮助 · ESC 选项";
@@ -2412,7 +2411,6 @@ function drawHUD() {
   ctx.fillStyle = "rgba(140,140,190,0.85)";
   ctx.fillText(hint, 26, H - 14);
 
-  // 死亡界面
   if (G.state === "dead" && G.death_timer > 0.45) {
     ctx.fillStyle = "rgba(0,0,0,0.72)";
     ctx.fillRect(0, 0, W, H);
@@ -2436,7 +2434,6 @@ function drawHUD() {
     ctx.fillStyle = "rgba(255,220,140,0.95)";
     ctx.fillText(`成就 ${G.save.unlocked.length}/${Object.keys(ACHIEVEMENTS).length}`, W / 2, H / 2 + 84);
 
-    // 两个按钮
     const bw2 = 220, bh2 = 56;
     const r1 = { x: W / 2 - bw2 - 20, y: H / 2 + 180, w: bw2, h: bh2 };
     const r2 = { x: W / 2 + 20, y: H / 2 + 180, w: bw2, h: bh2 };
@@ -2488,7 +2485,6 @@ function drawMinimap() {
   const sx = inner_w / WORLD_W;
   const sy = inner_h / WORLD_H;
 
-  // 视野框
   const vx1 = G.cam_x * sx + pad;
   const vy1 = G.cam_y * sy + pad;
   const vw = (W / G.cam_scale) * sx;
@@ -2497,7 +2493,6 @@ function drawMinimap() {
   ctx.lineWidth = 1;
   ctx.strokeRect(mm_x + vx1, mm_y + vy1, vw, vh);
 
-  // 球
   for (const b of G.bodies) {
     const bx = b.x * sx + pad + mm_x;
     const by = b.y * sy + pad + mm_y;
@@ -2516,7 +2511,6 @@ function drawMinimap() {
     }
   }
 
-  // 道具
   for (const p of G.powerups) {
     const px = p.x * sx + pad + mm_x;
     const py = p.y * sy + pad + mm_y;
@@ -2524,7 +2518,6 @@ function drawMinimap() {
     ctx.beginPath(); ctx.arc(px, py, 3, 0, TAU); ctx.fill();
   }
 
-  // 黑洞
   const hx = G.hole.x * sx + pad + mm_x;
   const hy = G.hole.y * sy + pad + mm_y;
   ctx.fillStyle = "rgba(200,130,255,1)";
@@ -2554,10 +2547,9 @@ function drawTutorial() {
     ["帮助", "F3"],
     ["选项菜单", "ESC / 手柄 Back"],
     ["切皮肤", "F1"],
-    ["关卡编辑器", "F2"],
   ];
   ctx.font = "bold 22px sans-serif";
-  let y = 170;
+  let y = 180;
   for (const [name, key] of lines) {
     ctx.fillStyle = "rgba(200,220,255,0.95)";
     ctx.textAlign = "right";
@@ -2604,7 +2596,6 @@ function drawOptionsMenu() {
     ctx.textAlign = "left";
   }
 
-  // 音量滑块
   const slider = { x: W/2 - 200, y: 500, w: 400, h: 8 };
   ctx.font = "16px sans-serif";
   ctx.fillStyle = "rgba(200,210,240,0.9)";
@@ -2621,7 +2612,6 @@ function drawOptionsMenu() {
   ctx.arc(knobX, slider.y + slider.h / 2, 10, 0, TAU);
   ctx.fill();
 
-  // 手柄状态
   ctx.font = "15px sans-serif";
   ctx.textAlign = "center";
   if (gamepad.connected) {
@@ -2742,7 +2732,6 @@ function drawHelpPage() {
     ctx.font = "bold 20px sans-serif";
   }
 
-  // 返回按钮
   const back = { x: W/2 - 130, y: H - 80, w: 260, h: 44 };
   const hover = mouse.x >= back.x && mouse.x <= back.x + back.w &&
                 mouse.y >= back.y && mouse.y <= back.y + back.h;
@@ -2861,59 +2850,6 @@ function roundRect(x, y, w, h, r) {
 }
 
 // =========================================================
-// 键盘全局处理
-// =========================================================
-window.addEventListener("keydown", e => {
-  const k = e.key.toLowerCase();
-  if (G.tutorial_open) {
-    G.tutorial_open = false;
-    G.save.seen_tutorial = true;
-    writeSave(G.save);
-    audio.play("ui", 0.5);
-    e.preventDefault();
-    return;
-  }
-  if (G.help_open) {
-    if (k === "f3") { G.help_open = false; audio.play("ui", 0.5); }
-    else if (k === "escape") { G.help_open = false; G.options_open = true; audio.play("ui", 0.5); }
-    e.preventDefault();
-    return;
-  }
-  if (G.options_open) {
-    if (k === "escape") { G.options_open = false; audio.play("ui", 0.5); }
-    e.preventDefault();
-    return;
-  }
-  if (G.mode_menu_open) {
-    if (k === "escape") { G.mode_menu_open = false; }
-    e.preventDefault();
-    return;
-  }
-  if (G.evo_menu_open) {
-    if (k === "1") selectEvo(0);
-    else if (k === "2") selectEvo(1);
-    e.preventDefault();
-    return;
-  }
-  if (k === "escape") { G.options_open = true; audio.play("ui", 0.5); e.preventDefault(); return; }
-  if (k === "f3") { G.help_open = true; audio.play("ui", 0.5); e.preventDefault(); return; }
-  if (k === "p") { G.paused_manual = !G.paused_manual; audio.play("ui", 0.5); e.preventDefault(); return; }
-  if (G.state === "dead" && k === "r") { restartGame(); e.preventDefault(); return; }
-  if (G.state === "play" && !G.paused_manual) {
-    if (k === " ") { tryUseSkill(G.dash); e.preventDefault(); }
-    else if (k === "q") tryUseSkill(G.invuln);
-    else if (k === "e") tryUseSkill(G.burst_sk);
-    else if (k === "f") dropBomb();
-    else if (k === "f1") {
-      const n = unlockedSkins(G.save);
-      G.save.skin = (G.save.skin + 1) % n;
-      writeSave(G.save);
-      G.toasts.push(new Toast(`皮肤：${SKINS[G.save.skin].name}`, 1.5));
-    }
-  }
-});
-
-// =========================================================
 // 启动
 // =========================================================
 const loadingEl = document.getElementById("loading");
@@ -2923,15 +2859,13 @@ function startGame() {
   requestAnimationFrame(gameLoop);
 }
 
-// 点击 loading 就开始
 loadingEl.addEventListener("click", startGame);
-// 自动尝试启动（浏览器策略允许时）
+
 setTimeout(() => {
   if (G.hole) return;
   startGame();
 }, 100);
 
-// 首次用户交互时初始化音频
 window.addEventListener("pointerdown", () => audio.init(), { once: true });
 window.addEventListener("keydown", () => audio.init(), { once: true });
 
